@@ -3,11 +3,11 @@
 
 #include <string>
 
-struct WindInfo(){
-    double wind_speed;
-    int wind_deg;
+struct WindInfo{
+    double speed;
+    int deg;
     bool state;
-}
+};
 
 WindInfo get_ksmf_wind(const std::string open_weather_api);
 
