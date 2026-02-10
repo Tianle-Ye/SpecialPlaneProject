@@ -20,14 +20,20 @@ LDFLAGS             = -lcurl
 
 OPENWEATHER_OBJ     = $(OBJ_DIR)/OpenWeather.o
 
-TARGET = $(BIN_DIR)/wind
+OPENSKY_OBJ         = $(OBJ_DIR)/OpenSky.o
 
-all: directories $(TARGET)
+WIND_TARGET = $(BIN_DIR)/wind
+FLIGHT_TARGET = $(BIN_DIR)/flights
+
+all: directories $(WIND_TARGET) $(FLIGHT_TARGET)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(CXX) $(CPPFLAGS) $(INCLUDE) $(CFLAGS) -c $< -o $@
 
-$(TARGET): $(OBJ_DIR)/main.o $(OBJ_DIR)/OpenWeather.o
+$(WIND_TARGET): $(OBJ_DIR)/main.o $(OBJ_DIR)/OpenWeather.o $(OBJ_DIR)/OpenSky.o
+	$(CXX) $^ -o $@ $(LDFLAGS)
+
+$(FLIGHT_TARGET): $(OBJ_DIR)/main.o $(OBJ_DIR)/OpenWeather.o $(OBJ_DIR)/OpenSky.o
 	$(CXX) $^ -o $@ $(LDFLAGS)
 
 directories:

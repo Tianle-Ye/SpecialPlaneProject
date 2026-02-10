@@ -2,8 +2,9 @@
 #define OPEN_SKY_H
 
 #include <string>
+#include <vector>
 
-struct get_flight{
+struct Flight{
     std::string icao24;
     std::string callsign;
     std::string depart_airport;
@@ -12,6 +13,18 @@ struct get_flight{
     time_t est_arrival_time;
 };
 
-std::string get_opensky_token();
+class MyOpenSky{
+    private:
+        std::string client_id;
+        std::string client_secret;
+        std::string saved_token;
+
+        time_t token_time;
+
+        bool authenticate();
+    public:
+        MyOpenSky();
+        std::vector<Flight> get_arrivals(const std::string airport_icao);
+};
 
 #endif
