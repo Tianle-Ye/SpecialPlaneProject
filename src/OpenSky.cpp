@@ -13,14 +13,14 @@ using std::endl;
 
 using json = nlohmann::json;
 
-struct MyOpenSky::SImplementation(){
+struct MyOpenSky::SImplementation{
     std::string client_id;
     std::string client_secret;
     std::string saved_token;
     time_t token_time;
 
-    size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
-        std::string *buffer = (std::string*) userdata;
+    static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
+        std::string *buffer = static_cast<std::string*>(userdata);
         buffer->append(ptr, size * nmemb);
         return size * nmemb;
     }
@@ -70,8 +70,8 @@ MyOpenSky::MyOpenSky() : DImplementation(std::make_shared<SImplementation>()){
     std::ifstream cred_file("secrets/credentials.json");
     if(cred_file.is_open()){
         json cred = json::parse(cred_file);
-        DImplementation->client_id = cred["client_id"];
-        DImplementation->client_secret = cred["client_secret"];
+        DImplementation->client_id = cred["clientId"];
+        DImplementation->client_secret = cred["clientSecret"];
         DImplementation->authenticate();
     }
 }
@@ -101,7 +101,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string airport_icao){
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SImplementation::write_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &saved_data);
 
         CURLcode res = curl_easy_perform(curl);

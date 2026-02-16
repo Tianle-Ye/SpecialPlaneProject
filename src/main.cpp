@@ -12,8 +12,6 @@ using std::endl;
 
 int main(){
 
-
-    MyOpenSky sky;
     MyOpenWeather wind;
 
     wind.get_wind_info(38.696, -121.591);
@@ -28,19 +26,21 @@ int main(){
     }
 
 
-
-
+    MyOpenSky sky;
     std::vector<Flight> ksmf_arrivals = sky.get_arrivals("KSMF");
 
     for(auto& f : ksmf_arrivals){
-        if(f.icao24 == "8C3200"){
-            cout<<"Find Air Transport B767! "
+        if(f.icao24 == "A6506D"){
+            cout<<"Find SkyWest CRJ-200! "
                 <<"| icao24: "<<f.icao24
                 <<" | callsign: "<<f.callsign
                 <<" | from "<<f.depart_airport
                 <<" to "<<f.arrival_airport
                 <<" | estimate arrival time: "<<f.est_arrival_time
                 <<" | estimate runway selection: "<<endl;
+        }
+        else{
+            cout<<"not found"<<endl;
         }
     }
 

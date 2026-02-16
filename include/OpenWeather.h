@@ -2,7 +2,7 @@
 #define OPEN_WEATHER_H
 
 #include <string>
-#inlcude <memory>
+#include <memory>
 
 struct WindInfo{
     double speed;

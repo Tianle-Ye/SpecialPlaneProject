@@ -4,7 +4,7 @@
 #include "../include/json.hpp"
 #include "../include/OpenWeather.h"
 #include "fstream"
-#inlcude "memory"
+#include "memory"
 
 using std::cout;
 using std::endl;
@@ -13,8 +13,8 @@ using json = nlohmann::json;
 struct MyOpenWeather::SImplementation{
     std::string my_api;
     WindInfo current_wind_info{0.0, 0, false};
-    size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
-        std::string *buffer = (std::string*) userdata;
+    static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
+        std::string *buffer = static_cast<std::string*>(userdata);
         buffer->append(ptr, size * nmemb);
         return size * nmemb;//return the number of bytes actually taken care of
     }
@@ -40,7 +40,7 @@ void MyOpenWeather::get_wind_info(double lat, double lon){
                             + DImplementation->my_api;
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());//convert c++ string back to c style string since libcurl is based on c
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SImplementation::write_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &saved_data);
 
         CURLcode res = curl_easy_perform(curl);

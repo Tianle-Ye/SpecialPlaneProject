@@ -33,7 +33,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 $(WIND_TARGET): $(OBJ_DIR)/main.o $(OBJ_DIR)/OpenWeather.o $(OBJ_DIR)/OpenSky.o
 	$(CXX) $^ -o $@ $(LDFLAGS)
 
-$(FLIGHT_TARGET): $(OBJ_DIR)/main.o $(OBJ_DIR)/OpenWeather.o $(OBJ_DIR)/OpenSky.o
+$(FLIGHT_TARGET): $(OBJ_DIR)/main.o $(OBJ_DIR)/OpenWeather.o $(OBJ_DIR)/OpenSky.o 
 	$(CXX) $^ -o $@ $(LDFLAGS)
 
 directories:
