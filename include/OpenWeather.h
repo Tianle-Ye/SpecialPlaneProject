@@ -2,6 +2,7 @@
 #define OPEN_WEATHER_H
 
 #include <string>
+#inlcude <memory>
 
 struct WindInfo{
     double speed;
@@ -11,10 +12,11 @@ struct WindInfo{
 
 class MyOpenWeather{
     private:
-        std::string my_api;
-        WindInfo current_wind_info;
+        struct SImplementation;
+        std::shared_ptr<SImplementation> DImplementation;
     public:
         MyOpenWeather();
+        ~MyOpenWeather();
         void get_wind_info(double lat, double lon);
         WindInfo get_wind() const;
 };

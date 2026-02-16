@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 
 struct Flight{
     std::string icao24;
@@ -15,15 +16,11 @@ struct Flight{
 
 class MyOpenSky{
     private:
-        std::string client_id;
-        std::string client_secret;
-        std::string saved_token;
-
-        time_t token_time;
-
-        bool authenticate();
+        struct SImplementation;
+        std::shared_ptr<SImplementation> DImplementation;
     public:
         MyOpenSky();
+        ~MyOpenSky();
         std::vector<Flight> get_arrivals(const std::string airport_icao);
 };
 
