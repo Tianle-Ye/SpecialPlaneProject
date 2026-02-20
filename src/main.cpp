@@ -27,22 +27,7 @@ int main(){
 
 
     MyOpenSky sky;
-    std::vector<Flight> ksmf_arrivals = sky.get_arrivals("KSMF");
-
-    for(auto& f : ksmf_arrivals){
-        if(f.icao24 == "A6506D"){
-            cout<<"Find SkyWest CRJ-200! "
-                <<"| icao24: "<<f.icao24
-                <<" | callsign: "<<f.callsign
-                <<" | from "<<f.depart_airport
-                <<" to "<<f.arrival_airport
-                <<" | estimate arrival time: "<<f.est_arrival_time
-                <<" | estimate runway selection: "<<endl;
-        }
-        else{
-            cout<<"not found"<<endl;
-        }
-    }
+    std::vector<Flight> ksmf_arrivals = sky.get_arrivals("KSMF", "SMF", 38.2, -122.1, 39.2, -121.1);
 
     return 0;
 }

@@ -5,6 +5,7 @@
 #include <../include/OpenSky.h>
 #include <fstream>
 #include <vector>
+#include <unordered_map>
 #include <ctime>
 #include <memory>
 
@@ -14,15 +15,51 @@ using std::endl;
 using json = nlohmann::json;
 
 struct MyOpenSky::SImplementation{
+
+    std::string airlabs_key = "b9e38b7f-850d-4be7-ae27-47090f0be0ed";
     std::string client_id;
     std::string client_secret;
     std::string saved_token;
     time_t token_time;
 
+    std::unordered_map<std::string, Flight> scheduled_arr;
+    time_t last_airlabs_update = 0;
+
     static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
         std::string *buffer = static_cast<std::string*>(userdata);
         buffer->append(ptr, size * nmemb);
         return size * nmemb;
+    }
+
+    void update_schdule(const std::string& aiport_iata){
+        time_t now = std::time(0);
+        if(now - last_airlabs_update < 3600){
+            return;
+        }
+
+        CURL* curl = curl_easy_init();
+        std::string response;
+
+        if(curl){
+            std::string url = "https://airlabs.co/api/v9/schedules?arr_iata=" + airport_iata + "&api_key=" + airlabs_key;
+
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITTENFUNCTION, write_callback);
+            curl_easy_setopt(curl, CURLOPT_WRITTENDATA, &response);
+            CURLcode res = curl_easy_perform(curl);
+
+            if(res == CURLE_OK){
+                auto data = json::parse(response);
+                if(data.is_array()){
+                    scheduled_arr.clear();
+                    for(auto &item : data){
+                        Flight f;
+                    }
+                    last_airlabs_update = now;
+                }
+            }
+            curl_easy_cleanup(curl);
+        }
     }
 
     bool authenticate(){
@@ -78,22 +115,24 @@ MyOpenSky::MyOpenSky() : DImplementation(std::make_shared<SImplementation>()){
 
 MyOpenSky::~MyOpenSky() = default;
 
-std::vector<Flight> MyOpenSky::get_arrivals(const std::string airport_icao){
+std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, const std::string& airport_iata, double lamin, double lomin, double lamax, double lomax){
+
+    DImplementation->update_schdule(airport_iata);
 
     time_t current_time = std::time(0);
     if((current_time - DImplementation->token_time) > (25 * 60) || DImplementation->saved_token.empty() == true){
         DImplementation->authenticate();//if the token is close to expire, authenticate a new one.
     }
 
-    std::vector<Flight> arrival_list;
+    std::vector<Flight> live_arrivals;
     CURL* curl = curl_easy_init();
-    std::string saved_data;
+    std::string response;
     
     if(curl){
         time_t now = std::time(0);
         time_t three_hours_later = now + (3 * 3600);
 
-        std::string url = "https://opensky-network.org/api/flights/arrival?airport=" + airport_icao + "&begin=" + std::to_string(now) + "&end=" + std::to_string(three_hours_later);
+        std::string url = "https://opensky-network.org/api/states/all?lamin=" + std::to_string(lamin) + "&lomin=" + std::to_string(lomin) + "&lamax=" + std::to_string(lamax) + "&lomax=" + std::to_string(lomax);
         
         struct curl_slist *headers = NULL;
         std::string auth_header = "Authorization: Bearer " + DImplementation->saved_token; 
@@ -102,21 +141,22 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string airport_icao){
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SImplementation::write_callback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &saved_data);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
         CURLcode res = curl_easy_perform(curl);
 
         if (res == CURLE_OK) {
-            auto data = json::parse(saved_data);
-            for(auto& item : data){
-                Flight f;
-                f.icao24 = item.value("icao24", "N/A");
-                f.callsign = item.value("callsign", "N/A");
-                f.depart_airport = item.value("estDepartureAirport", "Unknown");
-                f.arrival_airport = item.value("estArrivalAirport", "Unknown");
-                f.est_depart_time = item.value("firstSeen", 0);
-                f.est_arrival_time = item.value("lastSeen", 0);
-                arrival_list.push_back(f);
+            auto data = json::parse(response);
+            cout<<"data: "<<data<<endl;
+            for(auto& detail : data["states"]){
+                std::string d = detail[1].get<std::string>();
+                if(DImplementation->scheduled_arr.count(d)){
+                    Flight f;
+                    f = DImplementation->scheduled_arr[d];
+                    f.latitude = d[6].get<double>();
+                    f.longitude = d[5].get<double>();
+                    live_arrivals.push_back(f);
+                }
             }
         }
         else if(res == CURLE_OPERATION_TIMEDOUT){
@@ -125,5 +165,5 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string airport_icao){
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
     }
-    return arrival_list;
+    return live_arrivals;
 }

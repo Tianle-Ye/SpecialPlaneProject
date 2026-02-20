@@ -12,6 +12,8 @@ struct Flight{
     std::string arrival_airport;
     time_t est_depart_time;
     time_t est_arrival_time;
+    double lattitude;
+    double longitude;
 };
 
 class MyOpenSky{
