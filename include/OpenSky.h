@@ -6,7 +6,8 @@
 #include <memory>
 
 struct Flight{
-    std::string icao24;
+    bool is_special = false;
+    std::string hex_num;
     std::string callsign;
     std::string depart_airport;
     std::string arrival_airport;
@@ -14,6 +15,10 @@ struct Flight{
     time_t est_arrival_time;
     double lattitude;
     double longitude;
+    double altitude;
+    bool isdescending;
+    std::string regi_num;
+    std::string description;
 };
 
 class MyOpenSky{

@@ -5,7 +5,9 @@
 #include <../include/OpenSky.h>
 #include <fstream>
 #include <vector>
+#include <unordered_set>
 #include <unordered_map>
+#include <chrono>
 #include <ctime>
 #include <memory>
 
@@ -22,8 +24,8 @@ struct MyOpenSky::SImplementation{
     std::string saved_token;
     time_t token_time;
 
-    std::unordered_map<std::string, Flight> scheduled_arr;
-    time_t last_airlabs_update = 0;
+    std::unordered_set<std::string> today_arr_callsigns;
+    std::unordered_map<std::string, std::string> special_planes;
 
     static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
         std::string *buffer = static_cast<std::string*>(userdata);
@@ -31,11 +33,43 @@ struct MyOpenSky::SImplementation{
         return size * nmemb;
     }
 
-    void update_schdule(const std::string& aiport_iata){
-        time_t now = std::time(0);
-        if(now - last_airlabs_update < 3600){
+    void load_specials(const std::string& airport_icao){
+        std::ifstream file("data/special_planes.json");
+        if(!file.is_open()){
             return;
         }
+        try{
+            auto special_data = json::parse(file);
+            special_planes.clear();
+            if(special_data.contains(airport_icao)){
+                for(auto& item : special_data[airport_icao]){
+                    std::string hex = item.value("hex_num", "");
+                    std::string desc = item.value("description", "");
+                    if(!hex.empty()){
+                        special_planes[hex] = desc;
+                    }
+                }
+                cout<<"Successfully loaded special planes for "<<airport_icao<<endl;
+            }
+        }
+        catch(json::parse_error& e){
+            cout<<"Parse error: "<<e.what()<<endl;
+        }
+    }
+
+    void update_daily_schdule(const std::string& airport_iata){
+        auto now = system_clock::now();
+        auto today = std::chrono::floor<days>(now);
+        
+        static auto last_day = today;
+
+        if(today != last_day){
+            last_day = today;
+            get_daily_schedule(airport_iata);
+        }
+    }
+
+    void get_daily_schedule(const std::string& airport_iata){
 
         CURL* curl = curl_easy_init();
         std::string response;
@@ -44,19 +78,47 @@ struct MyOpenSky::SImplementation{
             std::string url = "https://airlabs.co/api/v9/schedules?arr_iata=" + airport_iata + "&api_key=" + airlabs_key;
 
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-            curl_easy_setopt(curl, CURLOPT_WRITTENFUNCTION, write_callback);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
             curl_easy_setopt(curl, CURLOPT_WRITTENDATA, &response);
             CURLcode res = curl_easy_perform(curl);
 
             if(res == CURLE_OK){
                 auto data = json::parse(response);
                 if(data.is_array()){
-                    scheduled_arr.clear();
+                    today_arr_callsigns.clear();
                     for(auto &item : data){
-                        Flight f;
+                        std::string callsign = item.value("flight_icao", "");
+                        if(!callsign.empty()){
+                            today_arr_callsigns.insert(callsign);
+                        }
                     }
                     last_airlabs_update = now;
                 }
+            }
+            curl_easy_cleanup(curl);
+        }
+    }
+
+    void get_detail(Flight& f){
+        CURL* curl = curl_easy_init();
+        std::string response;
+        if(curl){
+            std::string url = "https://airlabs.co/api/v9/flights?hex=" + f.hex_num + "&api_key=" + airlabs_key;
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+            curl_easy_setopt(curl, CURLOPT_WRITTENDATA, &response);
+            CURLcode res = curl_easy_perform(curl);
+
+            if(res == CURLE_OK){
+                auto data = json::parse(response);
+                if(data.is_array() && !data.empty()){
+                    f.depart_airport = data[0].value("dep_icao", "N/A");
+                    f.est_arrival_time = data[0].value("arr_time_ts", "");
+                }
+            }
+            else if(res == CURLE_OPERATION_TIMEDOUT){
+                cout<<"The request timed out."<<endl;
+                return false;
             }
             curl_easy_cleanup(curl);
         }
@@ -117,7 +179,7 @@ MyOpenSky::~MyOpenSky() = default;
 
 std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, const std::string& airport_iata, double lamin, double lomin, double lamax, double lomax){
 
-    DImplementation->update_schdule(airport_iata);
+    DImplementation->update_daily_schdule(airport_iata);
 
     time_t current_time = std::time(0);
     if((current_time - DImplementation->token_time) > (25 * 60) || DImplementation->saved_token.empty() == true){
@@ -129,8 +191,6 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
     std::string response;
     
     if(curl){
-        time_t now = std::time(0);
-        time_t three_hours_later = now + (3 * 3600);
 
         std::string url = "https://opensky-network.org/api/states/all?lamin=" + std::to_string(lamin) + "&lomin=" + std::to_string(lomin) + "&lamax=" + std::to_string(lamax) + "&lomax=" + std::to_string(lomax);
         
@@ -148,14 +208,26 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
         if (res == CURLE_OK) {
             auto data = json::parse(response);
             cout<<"data: "<<data<<endl;
-            for(auto& detail : data["states"]){
-                std::string d = detail[1].get<std::string>();
-                if(DImplementation->scheduled_arr.count(d)){
-                    Flight f;
-                    f = DImplementation->scheduled_arr[d];
-                    f.latitude = d[6].get<double>();
-                    f.longitude = d[5].get<double>();
-                    live_arrivals.push_back(f);
+            if(data.contains("states") && data["states"].is_array()){
+                for(auto& s : data["states"]){
+                    std::string hex = s[0].get<std::string>();
+                    std::string callsign = s[1].is_null() ? "" : s[1].get<std::string>();
+                    callsign = trim(callsign);
+                    if(DImplementation->today_arr_callsigns.count(callsign)){
+                        Flight f;
+                        f.callsign = callsign;
+                        f.hex_num = hex;
+                        f.latitude = s[6].get<double>();
+                        f.longitude = s[5].get<double>();
+                        f.altitude = s[7].get<double>();
+                        f.isdescending = s[11].get<double>() < 0 ? true : false; 
+                        live_arrivals.push_back(f);
+                        if(DImplementation->special_planes.count(hex)){
+                            f.is_special = true;
+                            DImplementation->get_detail(f);
+                            f.description = DImplementation->special_planes[hex];
+                        }
+                    }
                 }
             }
         }
