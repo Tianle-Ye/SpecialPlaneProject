@@ -73,13 +73,14 @@ struct MyOpenSky::SImplementation{
 
         CURL* curl = curl_easy_init();
         std::string response;
+        auto now = system_clock::now();
 
         if(curl){
             std::string url = "https://airlabs.co/api/v9/schedules?arr_iata=" + airport_iata + "&api_key=" + airlabs_key;
 
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(curl, CURLOPT_WRITTENDATA, &response);
+            curl_easy_setopt(curl, CURLOPT_WRITENDATA, &response);
             CURLcode res = curl_easy_perform(curl);
 
             if(res == CURLE_OK){
@@ -106,19 +107,18 @@ struct MyOpenSky::SImplementation{
             std::string url = "https://airlabs.co/api/v9/flights?hex=" + f.hex_num + "&api_key=" + airlabs_key;
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(curl, CURLOPT_WRITTENDATA, &response);
+            curl_easy_setopt(curl, CURLOPT_WRITENDATA, &response);
             CURLcode res = curl_easy_perform(curl);
 
             if(res == CURLE_OK){
                 auto data = json::parse(response);
                 if(data.is_array() && !data.empty()){
                     f.depart_airport = data[0].value("dep_icao", "N/A");
-                    f.est_arrival_time = data[0].value("arr_time_ts", "");
+                    f.est_arrival_time = std::to_string(data[0].value("arr_time_ts", 0));
                 }
             }
             else if(res == CURLE_OPERATION_TIMEDOUT){
                 cout<<"The request timed out."<<endl;
-                return false;
             }
             curl_easy_cleanup(curl);
         }
@@ -226,6 +226,9 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                             f.is_special = true;
                             DImplementation->get_detail(f);
                             f.description = DImplementation->special_planes[hex];
+                        }
+                        else{
+                            f.is_special = false;
                         }
                     }
                 }
