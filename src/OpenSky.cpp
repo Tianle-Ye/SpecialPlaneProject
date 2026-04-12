@@ -44,15 +44,18 @@ struct MyOpenSky::SImplementation{
 
     void load_specials(const std::string& airport_icao){
         std::ifstream file("data/special_planes.json");
-        if(!file.is_open()){
-            return;
+        if(!file.is_open()){ 
+            cout<<"ERROR: Cannot find special_planes.json at data"<<endl;
         }
         try{
-            auto special_data = json::parse(file);
+            json special_data = json::parse(file);
             special_planes.clear();
             if(special_data.contains(airport_icao)){
                 for(auto& item : special_data[airport_icao]){
                     std::string hex = item.value("hex_num", "");
+                    std::transform(hex.begin(), hex.end(), hex.begin(), [](unsigned char c){
+                        return std::tolower(c);
+                    });
                     std::string desc = item.value("description", "");
                     if(!hex.empty()){
                         special_planes[hex] = desc;
@@ -187,13 +190,13 @@ struct MyOpenSky::SImplementation{
 };
 
 MyOpenSky::MyOpenSky() : DImplementation(std::make_shared<SImplementation>()){
+    DImplementation->load_specials("KSMF");
     std::ifstream cred_file("secrets/credentials.json");
     if(cred_file.is_open()){
         json cred = json::parse(cred_file);
         DImplementation->client_id = cred["clientId"];
         DImplementation->client_secret = cred["clientSecret"];
         DImplementation->authenticate();
-        DImplementation->load_specials("KSMF");
     }
 }
 
@@ -245,17 +248,30 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         double alt = f.altitude;
                         bool on_ground = s[8].get<bool>();
                         double v_rate = s[11].is_null() ? 0.0 : s[11].get<double>();
+                        const double KSMF_LAT = 38.696;
+                        const double KSMF_LON = -121.591;
+                        bool is_locally_relevant = (std::abs(f.latitude - KSMF_LAT) < 1.0 && std::abs(f.longitude - KSMF_LON < 1.0));
                         if(on_ground || alt < 50){
-                            f.isdescending = false;
-                            f.status_text = "Landed / Taxiing";
+                            if(is_locally_relevant){
+                                f.isdescending = false;
+                                f.status_text = "Landed / Taxiing";
+                            }
+                            else{
+                                continue;
+                            }
                         }
                         else if(alt < 1000){
-                            f.isdescending = false;
-                            f.status_text = "> Approaching";
+                            if(is_locally_relevant){
+                                f.isdescending = false;
+                                f.status_text = "> Approaching";
+                            }
+                            else{
+                                continue;
+                            }
                         }
                         else if(v_rate < -0.5){
                             f.isdescending = true;
-                            f.status_text = "v Descending";
+                            f.status_text = is_locally_relevant ? "v Descending (to SMF)" : "v Descending (Transit)";
                         }
                         else{
                             f.isdescending = false;
@@ -264,12 +280,19 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         if(DImplementation->special_planes.count(hex)){
                             f.is_special = true;
                             f.description = DImplementation->special_planes[hex];
-                            if(f.isdescending && f.altitude < 5000){
-                                DImplementation->get_detail(f);
+                            DImplementation->get_detail(f);
+                            if(f.arrival_airport != "KSMF" && f.arrival_airport != "SMF"){
+                                f.is_special = false;
+                                f.status_text = "- Overflight (To " + f.arrival_airport + ")";
                             }
                             else{
-                                f.depart_airport = "PENDING";
-                                f.est_arrival_time = 0;
+                                if(f.isdescending && f.altitude < 5000){
+                                    DImplementation->get_detail(f);
+                                }
+                                else{
+                                    f.depart_airport = "PENDING";
+                                    f.est_arrival_time = 0;
+                                }
                             }
                         }
                         else{

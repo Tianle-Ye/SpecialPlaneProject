@@ -71,9 +71,6 @@ int main(){
                     cout<<" ★★★ [[ SPECIAL ]] "<<f.description;
                 }
                 cout<<endl;
-                if(ksmf_arrivals.empty()){
-                    cout<<"No special plane are arriving currently."<<endl;
-                }
             }
         }
 
