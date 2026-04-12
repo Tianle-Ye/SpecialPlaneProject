@@ -27,7 +27,7 @@ FLIGHT_TARGET = $(BIN_DIR)/flights
 
 all: directories $(WIND_TARGET) $(FLIGHT_TARGET)
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp $(INC_DIR)/OpenSky.h $(INC_DIR)/OpenWeather.h
 	$(CXX) $(CPPFLAGS) $(INCLUDE) $(CFLAGS) -c $< -o $@
 
 $(WIND_TARGET): $(OBJ_DIR)/main.o $(OBJ_DIR)/OpenWeather.o $(OBJ_DIR)/OpenSky.o

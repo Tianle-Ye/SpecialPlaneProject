@@ -16,8 +16,16 @@ using std::endl;
 
 using json = nlohmann::json;
 
-struct MyOpenSky::SImplementation{
+std::string trim(const std::string& s) {
+    size_t first = s.find_first_not_of(' ');
+    if (std::string::npos == first) return s;
+    size_t last = s.find_last_not_of(' ');
+    return s.substr(first, (last - first + 1));
+}
 
+struct MyOpenSky::SImplementation{
+    
+    std::chrono::system_clock::time_point last_airlabs_update;
     std::string airlabs_key = "b9e38b7f-850d-4be7-ae27-47090f0be0ed";
     std::string client_id;
     std::string client_secret;
@@ -26,6 +34,7 @@ struct MyOpenSky::SImplementation{
 
     std::unordered_set<std::string> today_arr_callsigns;
     std::unordered_map<std::string, std::string> special_planes;
+    std::unordered_map<std::string, Flight> detail_cache;
 
     static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
         std::string *buffer = static_cast<std::string*>(userdata);
@@ -58,14 +67,15 @@ struct MyOpenSky::SImplementation{
     }
 
     void update_daily_schdule(const std::string& airport_iata){
-        auto now = system_clock::now();
-        auto today = std::chrono::floor<days>(now);
+        auto now = std::chrono::system_clock::now();
+        auto today = std::chrono::floor<std::chrono::days>(now);
         
-        static auto last_day = today;
+        static std::chrono::system_clock::time_point last_day = std::chrono::system_clock::time_point::min();
 
         if(today != last_day){
             last_day = today;
             get_daily_schedule(airport_iata);
+            cout<<"Daily schedule updated for: "<<airport_iata<<endl;
         }
     }
 
@@ -73,27 +83,32 @@ struct MyOpenSky::SImplementation{
 
         CURL* curl = curl_easy_init();
         std::string response;
-        auto now = system_clock::now();
+        auto now = std::chrono::system_clock::now();
 
         if(curl){
             std::string url = "https://airlabs.co/api/v9/schedules?arr_iata=" + airport_iata + "&api_key=" + airlabs_key;
 
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(curl, CURLOPT_WRITENDATA, &response);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
             CURLcode res = curl_easy_perform(curl);
 
             if(res == CURLE_OK){
                 auto data = json::parse(response);
-                if(data.is_array()){
+                if(data.contains("response") && data["response"].is_array()){
                     today_arr_callsigns.clear();
-                    for(auto &item : data){
-                        std::string callsign = item.value("flight_icao", "");
+                    for(auto &item : data["response"]){
+                        std::string callsign = trim(item.value("flight_icao", ""));
                         if(!callsign.empty()){
+                            // cout<<"Added to schedule:"<<callsign<<endl;
                             today_arr_callsigns.insert(callsign);
                         }
                     }
                     last_airlabs_update = now;
+                    cout<<"Successfully loaded "<<today_arr_callsigns.size()<<" scheduled arrivals."<< endl;
+                }
+                else{
+                    cout<<"Airlabs ERROR: "<<data.dump()<<endl;
                 }
             }
             curl_easy_cleanup(curl);
@@ -101,21 +116,27 @@ struct MyOpenSky::SImplementation{
     }
 
     void get_detail(Flight& f){
+        if (detail_cache.count(f.hex_num)) {
+            f.depart_airport = detail_cache[f.hex_num].depart_airport;
+            f.est_arrival_time = detail_cache[f.hex_num].est_arrival_time;
+            return;
+        }
         CURL* curl = curl_easy_init();
         std::string response;
         if(curl){
             std::string url = "https://airlabs.co/api/v9/flights?hex=" + f.hex_num + "&api_key=" + airlabs_key;
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(curl, CURLOPT_WRITENDATA, &response);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
             CURLcode res = curl_easy_perform(curl);
 
             if(res == CURLE_OK){
                 auto data = json::parse(response);
                 if(data.is_array() && !data.empty()){
                     f.depart_airport = data[0].value("dep_icao", "N/A");
-                    f.est_arrival_time = std::to_string(data[0].value("arr_time_ts", 0));
+                    f.est_arrival_time = data[0].value("arr_time_ts", 0LL);
                 }
+                detail_cache[f.hex_num] = f;
             }
             else if(res == CURLE_OPERATION_TIMEDOUT){
                 cout<<"The request timed out."<<endl;
@@ -172,6 +193,7 @@ MyOpenSky::MyOpenSky() : DImplementation(std::make_shared<SImplementation>()){
         DImplementation->client_id = cred["clientId"];
         DImplementation->client_secret = cred["clientSecret"];
         DImplementation->authenticate();
+        DImplementation->load_specials("KSMF");
     }
 }
 
@@ -207,7 +229,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
 
         if (res == CURLE_OK) {
             auto data = json::parse(response);
-            cout<<"data: "<<data<<endl;
+            //cout<<"data: "<<data<<endl;
             if(data.contains("states") && data["states"].is_array()){
                 for(auto& s : data["states"]){
                     std::string hex = s[0].get<std::string>();
@@ -217,19 +239,43 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         Flight f;
                         f.callsign = callsign;
                         f.hex_num = hex;
-                        f.latitude = s[6].get<double>();
-                        f.longitude = s[5].get<double>();
-                        f.altitude = s[7].get<double>();
-                        f.isdescending = s[11].get<double>() < 0 ? true : false; 
-                        live_arrivals.push_back(f);
+                        f.latitude = s[6].is_null() ? 0.0 : s[6].get<double>();
+                        f.longitude = s[5].is_null() ? 0.0 : s[5].get<double>();
+                        f.altitude = s[7].is_null() ? 0.0 : s[7].get<double>();
+                        double alt = f.altitude;
+                        bool on_ground = s[8].get<bool>();
+                        double v_rate = s[11].is_null() ? 0.0 : s[11].get<double>();
+                        if(on_ground || alt < 50){
+                            f.isdescending = false;
+                            f.status_text = "Landed / Taxiing";
+                        }
+                        else if(alt < 1000){
+                            f.isdescending = false;
+                            f.status_text = "> Approaching";
+                        }
+                        else if(v_rate < -0.5){
+                            f.isdescending = true;
+                            f.status_text = "v Descending";
+                        }
+                        else{
+                            f.isdescending = false;
+                            f.status_text = "- En Route";
+                        }
                         if(DImplementation->special_planes.count(hex)){
                             f.is_special = true;
-                            DImplementation->get_detail(f);
                             f.description = DImplementation->special_planes[hex];
+                            if(f.isdescending && f.altitude < 5000){
+                                DImplementation->get_detail(f);
+                            }
+                            else{
+                                f.depart_airport = "PENDING";
+                                f.est_arrival_time = 0;
+                            }
                         }
                         else{
                             f.is_special = false;
                         }
+                        live_arrivals.push_back(f);
                     }
                 }
             }

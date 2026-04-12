@@ -4,18 +4,19 @@
 #include <../include/OpenWeather.h>
 #include <../include/OpenSky.h>
 #include <iomanip>
+#include <thread>
+#include <chrono>
 
 using std::cout;
 using std::endl;
 
 #define MS_TO_KNOTS 1.94384
 
-std::string convert_time(const std::string& otime){
-    if(otime == "0" || otime.empty()){
+std::string convert_time(const time_t otime){
+    if(otime == 0){
         return "TIME N/A";
     }
-    time_t ootime = std::stoll(otime);
-    struct tm *lt = std::localtime(&ootime);
+    struct tm *lt = std::localtime(&otime);
     char buffer[10];
     std::strftime(buffer, sizeof(buffer), "%H:%M", lt);
     return std::string(buffer);
@@ -24,46 +25,68 @@ std::string convert_time(const std::string& otime){
 int main(){
 
     MyOpenWeather wind;
-
-    wind.get_wind_info(38.696, -121.591);
-    WindInfo ksmf_wind = wind.get_wind();
-
-    double knots = ksmf_wind.speed * MS_TO_KNOTS;
-
-    cout<<"========KSMF Wind Status and Special List========"<<endl;
-
-    if(ksmf_wind.state == true){
-        cout<<"current KSMF wind speed: "<<ksmf_wind.speed<<" m/s ("<<std::fixed<<std::setprecision(2)<<knots<<" knots)"<<endl;
-        cout<<"current KSMF wind direction: "<<ksmf_wind.deg<<" degrees"<<endl;
-    }
-    else{
-        cout<<"fail to retrieve KSMF wind info."<<endl;
-    }
-
-    cout<<"----------------------------------------"<<endl;
-
     MyOpenSky sky;
-    std::vector<Flight> ksmf_arrivals = sky.get_arrivals("KSMF", "SMF", 33.906, -126.775, 42.930, -114.539);
 
-    if(ksmf_arrivals.empty()){
-        cout<<"No special plane are arriving currently."
-    }
-    else{
-        cout<<std::left<<std::setw(10)<<"FROM"
-            <<std::setw(12)<<"ETA"
-            <<"SPECIAL DESCRIPTION"<<endl;
+    while(true){
+        std::cout<<"\033[2J\033[H"<<std::flush;
+        wind.get_wind_info(38.696, -121.591);
+        WindInfo ksmf_wind = wind.get_wind();
+        double knots = ksmf_wind.speed * MS_TO_KNOTS;
 
-        for(const auto& f : ksmf_arrivals){
-            if(f.is_special){
-                cout<<std::left<<std::setw(10)<<(f.depart_airport.empty() ? "N/A" : f.depart_airport)
-                    <<std::setw(10)<<convert_time(f.est_arrival_time);
+        cout<<"========KSMF Wind Status and Special List========"<<endl;
 
-                cout<<"**SPECIAL**"<<f.description;
-            }
-            cout<<endl;
+        if(ksmf_wind.state == true){
+            cout<<"current KSMF wind speed: "<<ksmf_wind.speed<<" m/s ("<<std::fixed<<std::setprecision(2)<<knots<<" knots)"<<endl;
+            cout<<"current KSMF wind direction: "<<ksmf_wind.deg<<" degrees"<<endl;
         }
-    }
-    cout<<"========================================"<<endl;
+        else{
+            cout<<"fail to retrieve KSMF wind info."<<endl;
+        }
 
+        cout<<"----------------------------------------"<<endl;
+
+        std::vector<Flight> ksmf_arrivals = sky.get_arrivals("KSMF", "SMF", 34.906, -126.775, 42.930, -114.539);
+
+        cout<<std::left<<std::setw(12)<<"CALLSIGN"
+            <<std::setw(10)<<"FROM"
+            <<std::setw(10)<<"ETA"
+            <<"STATUS / SPECIAL DESCRIPTION"<<endl;
+
+        if (ksmf_arrivals.empty()) {
+            cout<<"\n[Status] No KSMF inbound traffic detected at this moment."<<endl;
+        }
+        else{
+            for(const auto& f : ksmf_arrivals){
+                cout<<std::left<<std::setw(12)<<f.callsign
+                    <<std::setw(10)<<(f.depart_airport.empty() ? "N/A" : f.depart_airport);
+                if(f.is_special){
+                    std::string eta_display = (f.est_arrival_time == 0) ? "CALC..." : convert_time(f.est_arrival_time);
+                    cout<<std::setw(10)<<eta_display;
+                }
+                else{
+                    cout<<std::setw(10)<<"---";
+                }
+                cout<<std::setw(15)<<f.status_text;
+                if (f.is_special) {
+                    cout<<" ★★★ [[ SPECIAL ]] "<<f.description;
+                }
+                cout<<endl;
+                if(ksmf_arrivals.empty()){
+                    cout<<"No special plane are arriving currently."<<endl;
+                }
+            }
+        }
+
+        cout<<"========================================"<<endl;
+
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+        cout << "Last updated: " << std::put_time(std::localtime(&now_c), "%H:%M:%S") << endl;
+
+        cout<<"wait 60s for update."<<endl;
+
+        std::this_thread::sleep_for(std::chrono::seconds(60));
+    }
+    
     return 0;
 }
