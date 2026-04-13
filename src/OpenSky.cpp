@@ -302,8 +302,8 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         f.altitude = s[7].is_null() ? 0.0 : s[7].get<double>();
                         double alt = f.altitude;
                         bool on_ground = s[8].get<bool>();
-                        double v_rate = s[11].is_null() ? 0.0 : s[11].get<double>();
-                        if(v_rate > 1.0 && alt > 500){
+                        f.v_rate = s[11].is_null() ? 0.0 : s[11].get<double>();
+                        if(f.v_rate > 1.0 && alt > 500){
                             f.status_text = "^ Climbing / Departing";
                             f.isdescending = false;
                             std::string hex_upper = hex;
@@ -337,7 +337,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                                 continue;
                             }
                         }
-                        else if(v_rate < -0.5){
+                        else if(f.v_rate < -0.5){
                             f.isdescending = true;
                             f.status_text = is_locally_relevant ? "v Descending (to SMF)" : "v Descending";
                         }

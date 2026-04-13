@@ -16,6 +16,7 @@ struct Flight{
     double latitude;
     double longitude;
     double altitude;
+    double v_rate;
     bool isdescending;
     std::string regi_num;
     std::string description;
