@@ -16,7 +16,7 @@ INCLUDE             = -I $(INC_DIR)
 ARFLAGS             = rcs
 CFLAGS              = -Wall
 CPPFLAGS            = --std=c++20
-LDFLAGS             = -lcurl
+LDFLAGS             = -lcurl -lsqlite3
 
 OPENWEATHER_OBJ     = $(OBJ_DIR)/OpenWeather.o
 

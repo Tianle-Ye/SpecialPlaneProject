@@ -12,11 +12,12 @@ using std::endl;
 
 #define MS_TO_KNOTS 1.94384
 
-std::string convert_time(const time_t otime){
-    if(otime == 0){
-        return "TIME N/A";
+std::string convert_time(const long long otime){
+    if(otime <= 0){
+        return "---";
     }
-    struct tm *lt = std::localtime(&otime);
+    time_t t = static_cast<time_t>(otime);
+    struct tm *lt = std::localtime(&t);
     char buffer[10];
     std::strftime(buffer, sizeof(buffer), "%H:%M", lt);
     return std::string(buffer);
@@ -57,16 +58,11 @@ int main(){
         }
         else{
             for(const auto& f : ksmf_arrivals){
-                cout<<std::left<<std::setw(12)<<f.callsign
-                    <<std::setw(10)<<(f.depart_airport.empty() ? "N/A" : f.depart_airport);
-                if(f.is_special){
-                    std::string eta_display = (f.est_arrival_time == 0) ? "CALC..." : convert_time(f.est_arrival_time);
-                    cout<<std::setw(10)<<eta_display;
-                }
-                else{
-                    cout<<std::setw(10)<<"---";
-                }
-                cout<<std::setw(15)<<f.status_text;
+                cout<<std::left<<std::setw(12)<<f.callsign;
+                std::string from_apt = (f.depart_airport.empty() || f.depart_airport == "PENDING") ? "N/A" : f.depart_airport;
+                cout<<std::setw(10)<<from_apt;
+                cout<<std::setw(10)<<convert_time(f.est_arrival_time);
+                cout<<std::setw(25)<<f.status_text;
                 if (f.is_special) {
                     cout<<" ★★★ [[ SPECIAL ]] "<<f.description;
                 }

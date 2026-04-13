@@ -10,6 +10,7 @@
 #include <chrono>
 #include <ctime>
 #include <memory>
+#include <sqlite3.h>
 
 using std::cout;
 using std::endl;
@@ -35,6 +36,7 @@ struct MyOpenSky::SImplementation{
     std::unordered_set<std::string> today_arr_callsigns;
     std::unordered_map<std::string, std::string> special_planes;
     std::unordered_map<std::string, Flight> detail_cache;
+    std::unordered_map<std::string, long long> schedule_times;
 
     static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
         std::string *buffer = static_cast<std::string*>(userdata);
@@ -77,6 +79,7 @@ struct MyOpenSky::SImplementation{
 
         if(today != last_day){
             last_day = today;
+            schedule_times.clear();
             get_daily_schedule(airport_iata);
             cout<<"Daily schedule updated for: "<<airport_iata<<endl;
         }
@@ -102,9 +105,10 @@ struct MyOpenSky::SImplementation{
                     today_arr_callsigns.clear();
                     for(auto &item : data["response"]){
                         std::string callsign = trim(item.value("flight_icao", ""));
+                        long long est_ts = item.value("arr_estimated_ts", 0LL);
                         if(!callsign.empty()){
-                            // cout<<"Added to schedule:"<<callsign<<endl;
                             today_arr_callsigns.insert(callsign);
+                            schedule_times[callsign] = est_ts;
                         }
                     }
                     last_airlabs_update = now;
@@ -119,15 +123,23 @@ struct MyOpenSky::SImplementation{
     }
 
     void get_detail(Flight& f){
-        if (detail_cache.count(f.hex_num)) {
-            f.depart_airport = detail_cache[f.hex_num].depart_airport;
-            f.est_arrival_time = detail_cache[f.hex_num].est_arrival_time;
+        std::string hex_upper = f.hex_num;
+        std::transform(hex_upper.begin(), hex_upper.end(), hex_upper.begin(), ::toupper);
+        if(detail_cache.count(hex_upper)){
+            if(f.v_rate > 1.0){
+                detail_cache.erase(hex_upper);
+            }
+            else{
+                f.arrival_airport = detail_cache[hex_upper].arrival_airport;
+                f.depart_airport = detail_cache[hex_upper].depart_airport;
+                f.is_special = true;
+            }
             return;
         }
         CURL* curl = curl_easy_init();
         std::string response;
         if(curl){
-            std::string url = "https://airlabs.co/api/v9/flights?hex=" + f.hex_num + "&api_key=" + airlabs_key;
+            std::string url = "https://airlabs.co/api/v9/flights?hex=" + hex_upper + "&api_key=" + airlabs_key;
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
@@ -135,11 +147,13 @@ struct MyOpenSky::SImplementation{
 
             if(res == CURLE_OK){
                 auto data = json::parse(response);
-                if(data.is_array() && !data.empty()){
-                    f.depart_airport = data[0].value("dep_icao", "N/A");
-                    f.est_arrival_time = data[0].value("arr_time_ts", 0LL);
+                // std::cout<<"[API TRACE] Hex: "<<hex_upper<<" Response: "<<response<<std::endl;
+                if(data.contains("response") && data["response"].is_array() && !data["response"].empty()){
+                    auto& flight_data = data["response"][0];
+                    f.arrival_airport = flight_data.value("arr_icao", "N/A");
+                    f.depart_airport = flight_data.value("dep_icao", "N/A");
                 }
-                detail_cache[f.hex_num] = f;
+                detail_cache[hex_upper] = f;
             }
             else if(res == CURLE_OPERATION_TIMEDOUT){
                 cout<<"The request timed out."<<endl;
@@ -187,9 +201,50 @@ struct MyOpenSky::SImplementation{
         }
         return false;
     }
+
+    sqlite3* db = nullptr;
+    void init_database(){
+        if(sqlite3_open("data/Special_flights_history.db", &db) != SQLITE_OK){
+            std::cerr<<"Can't open database: "<<sqlite3_errmsg(db)<<std::endl;
+            return;
+        }
+        const char* sql = "CREATE TABLE IF NOT EXISTS arrivals ("
+                          "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                          "hex_num TEXT NOT NULL,"
+                          "callsign TEXT,"
+                          "description TEXT,"
+                          "log_date DATE DEFAULT (CURRENT_DATE),"
+                          "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                          "UNIQUE(hex_num, log_date));";
+        char* errMsg = 0;
+        if(sqlite3_exec(db, sql, 0, 0, &errMsg) != SQLITE_OK){
+            std::cerr<<"SQL error: "<<errMsg<<std::endl;
+            sqlite3_free(errMsg);
+        }
+    }
+
+    void log_flight(const Flight& f) {
+        if(!db){
+            return;
+        }
+        char* zSQL = sqlite3_mprintf(
+            "INSERT OR IGNORE INTO arrivals (hex_num, callsign, description) VALUES (%Q, %Q, %Q);",
+            f.hex_num.c_str(), f.callsign.c_str(), f.description.c_str()
+        );
+
+        sqlite3_exec(db, zSQL, 0, 0, nullptr);
+        sqlite3_free(zSQL);
+    }
+
+    ~SImplementation(){
+        if(db){
+            sqlite3_close(db);
+        }
+    }
 };
 
 MyOpenSky::MyOpenSky() : DImplementation(std::make_shared<SImplementation>()){
+    DImplementation->init_database();
     DImplementation->load_specials("KSMF");
     std::ifstream cred_file("secrets/credentials.json");
     if(cred_file.is_open()){
@@ -248,9 +303,18 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         double alt = f.altitude;
                         bool on_ground = s[8].get<bool>();
                         double v_rate = s[11].is_null() ? 0.0 : s[11].get<double>();
+                        if(v_rate > 1.0 && alt > 500){
+                            f.status_text = "^ Climbing / Departing";
+                            f.isdescending = false;
+                            std::string hex_upper = hex;
+                            std::transform(hex_upper.begin(), hex_upper.end(), hex_upper.begin(), ::toupper);
+                            DImplementation->detail_cache.erase(hex_upper);
+                        }
                         const double KSMF_LAT = 38.696;
                         const double KSMF_LON = -121.591;
                         bool is_locally_relevant = (std::abs(f.latitude - KSMF_LAT) < 1.0 && std::abs(f.longitude - KSMF_LON < 1.0));
+                        long long current_time = std::time(0);
+                        long long last_pos_update = s[3].is_null() ? 0 : s[3].get<long long>();
                         if(on_ground || alt < 50){
                             if(is_locally_relevant){
                                 f.isdescending = false;
@@ -261,7 +325,11 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                             }
                         }
                         else if(alt < 1000){
-                            if(is_locally_relevant){
+                            if((current_time - last_pos_update) > 25 && last_pos_update != 0){
+                                f.status_text = "Landed (Signal Lost)";
+                                f.isdescending = false;
+                            }
+                            else if(is_locally_relevant){
                                 f.isdescending = false;
                                 f.status_text = "> Approaching";
                             }
@@ -271,7 +339,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         }
                         else if(v_rate < -0.5){
                             f.isdescending = true;
-                            f.status_text = is_locally_relevant ? "v Descending (to SMF)" : "v Descending (Transit)";
+                            f.status_text = is_locally_relevant ? "v Descending (to SMF)" : "v Descending";
                         }
                         else{
                             f.isdescending = false;
@@ -280,23 +348,26 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         if(DImplementation->special_planes.count(hex)){
                             f.is_special = true;
                             f.description = DImplementation->special_planes[hex];
-                            DImplementation->get_detail(f);
-                            if(f.arrival_airport != "KSMF" && f.arrival_airport != "SMF"){
-                                f.is_special = false;
-                                f.status_text = "- Overflight (To " + f.arrival_airport + ")";
+                            if((f.isdescending) || (f.status_text == "> Approaching") || (f.status_text == "Landed / Taxiing")){
+                                DImplementation->get_detail(f);
+                                if(f.arrival_airport == "KSMF" || f.arrival_airport == "SMF"){
+                                    DImplementation->log_flight(f);
+                                }
+                                else if(!f.arrival_airport.empty()){
+                                    f.is_special = false;
+                                    f.status_text = "- Overflight (To " + f.arrival_airport + ")";
+                                }
                             }
                             else{
-                                if(f.isdescending && f.altitude < 5000){
-                                    DImplementation->get_detail(f);
-                                }
-                                else{
-                                    f.depart_airport = "PENDING";
-                                    f.est_arrival_time = 0;
-                                }
+                                f.depart_airport = "PENDING";
+                                f.est_arrival_time = 0;
                             }
                         }
                         else{
                             f.is_special = false;
+                        }
+                        if(DImplementation->schedule_times.count(f.callsign)){
+                            f.est_arrival_time = DImplementation->schedule_times[f.callsign];
                         }
                         live_arrivals.push_back(f);
                     }
