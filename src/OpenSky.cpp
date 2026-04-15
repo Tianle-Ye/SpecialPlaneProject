@@ -353,6 +353,9 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                                 if(f.arrival_airport == "KSMF" || f.arrival_airport == "SMF"){
                                     DImplementation->log_flight(f);
                                 }
+                                else if(is_locally_relevant == true && f.v_rate <= 0.0){
+                                    DImplementation->log_flight(f);
+                                }
                                 else if(!f.arrival_airport.empty()){
                                     f.is_special = false;
                                     f.status_text = "- Overflight (To " + f.arrival_airport + ")";
