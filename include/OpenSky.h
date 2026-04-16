@@ -21,6 +21,7 @@ struct Flight{
     std::string regi_num;
     std::string description;
     std::string status_text;
+    std::string predicted_runway = "N/A";
 };
 
 class MyOpenSky{

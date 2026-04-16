@@ -11,11 +11,29 @@
 #include <ctime>
 #include <memory>
 #include <sqlite3.h>
+#include <cmath>
 
 using std::cout;
 using std::endl;
 
 using json = nlohmann::json;
+
+namespace{
+    std::string estimate_ksmf_runway(double lat, double lon, double track, double wind_deg, double wind_speed){
+        const double RWY17_HDG = 174.0;
+        double PI = 3.14159265358979323846;
+        const double wind_threshold = 2.5;
+        std::string rwy;
+        double angle_rad = (wind_deg - RWY17_HDG) * PI / 180.0;
+        double hw_component = wind_speed_knots * std::cos(angle_rad);
+        if(hw_component >= -2.5){
+            rwy = "17";
+        }
+        else{
+            rwy = 
+        }
+    }
+}
 
 std::string trim(const std::string& s) {
     size_t first = s.find_first_not_of(' ');
