@@ -18,20 +18,43 @@ using std::endl;
 
 using json = nlohmann::json;
 
-namespace{
-    std::string estimate_ksmf_runway(double lat, double lon, double track, double wind_deg, double wind_speed){
-        const double RWY17_HDG = 174.0;
-        double PI = 3.14159265358979323846;
-        const double wind_threshold = 2.5;
-        std::string rwy;
-        double angle_rad = (wind_deg - RWY17_HDG) * PI / 180.0;
-        double hw_component = wind_speed_knots * std::cos(angle_rad);
-        if(hw_component >= -2.5){
-            rwy = "17";
+void predict_runway(Flight& f, double wind_deg_true, double wind_speed_kts) {
+    const double RWY_TRUE_HDG = 180.8; 
+    const double M_PI_VAL = 3.141592653589793;
+    
+    double angle_rad = (wind_deg_true - RWY_TRUE_HDG) * M_PI_VAL / 180.0;
+    double hw_component = wind_speed_kts * std::cos(angle_rad);
+    std::string flow = (hw_component >= -5.0) ? "17" : "35";
+
+    std::string carrier = f.callsign.substr(0, 3);
+    char side = 'L';
+
+    // terminal preference.
+    bool is_terminal_b = (carrier == "SWA" || carrier == "ASA");
+    bool is_terminal_a = (carrier == "UAL" || carrier == "AAL" || carrier == "DAL");
+
+    if (f.altitude > 1500) {
+        // high altitude, trust airline preferences
+        if (is_terminal_b) side = (flow == "17") ? 'R' : 'L'; // 17R/35L is closer to B
+        else if (is_terminal_a) side = (flow == "17") ? 'L' : 'R'; // 17L/35R is closer to A
+        else {
+            // other airlines, use track to predict
+            side = (f.longitude < -121.591) ? (flow == "17" ? 'R' : 'L') : (flow == "17" ? 'L' : 'R');
         }
-        else{
-            rwy = 
+    } else {
+        // low altitude, trust track
+        if (f.track > 181.5) side = 'R';
+        else if (f.track < 180.0) side = 'L';
+        else {
+            // blur areas
+            side = (f.longitude < -121.591) ? 'R' : 'L';
         }
+    }
+
+    if (f.altitude > 5000) {
+        f.predicted_runway = flow;
+    } else {
+        f.predicted_runway = flow + side;
     }
 }
 
@@ -55,6 +78,9 @@ struct MyOpenSky::SImplementation{
     std::unordered_map<std::string, std::string> special_planes;
     std::unordered_map<std::string, Flight> detail_cache;
     std::unordered_map<std::string, long long> schedule_times;
+
+    std::string current_active_flow = "17"; // default flow
+    int tailwind_violation_count = 0;
 
     static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
         std::string *buffer = static_cast<std::string*>(userdata);
@@ -254,6 +280,43 @@ struct MyOpenSky::SImplementation{
         sqlite3_free(zSQL);
     }
 
+    std::string get_stabilized_runway(double hw_comp) {
+        if (current_active_flow == "17" && hw_comp < -5.0) {
+            tailwind_violation_count++;
+            if (tailwind_violation_count > 5) {
+                current_active_flow = "35";
+                tailwind_violation_count = 0;
+            }
+        } else if (current_active_flow == "35" && hw_comp > 5.0) {
+            current_active_flow = "17";
+        }
+        return current_active_flow;
+    }
+
+    struct CrosswindStatus {
+        double velocity;
+        bool is_dangerous;
+        std::string warning_msg;
+    };
+
+    CrosswindStatus check_crosswind(double wind_deg_true, double wind_speed_kts) {
+        const double RWY_TRUE_HDG = 180.8;
+        const double M_PI_b = 3.141592653589793;
+        const double XW_LIMIT = 25.0;
+
+        double angle_rad = (wind_deg_true - RWY_TRUE_HDG) * M_PI_b / 180.0;
+        double xw_comp = std::abs(wind_speed_kts * std::sin(angle_rad));
+
+        CrosswindStatus status;
+        status.velocity = xw_comp;
+        status.is_dangerous = (xw_comp > XW_LIMIT);
+        
+        if (status.is_dangerous) {
+            status.warning_msg = "!!! CAUTION: HIGH CROSSWIND (" + std::to_string((int)xw_comp) + " KTS) !!!";
+        }
+        return status;
+    }
+
     ~SImplementation(){
         if(db){
             sqlite3_close(db);
@@ -275,7 +338,7 @@ MyOpenSky::MyOpenSky() : DImplementation(std::make_shared<SImplementation>()){
 
 MyOpenSky::~MyOpenSky() = default;
 
-std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, const std::string& airport_iata, double lamin, double lomin, double lamax, double lomax){
+std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, const std::string& airport_iata, double lamin, double lomin, double lamax, double lomax, double wind_deg, double wind_speed_kts){
 
     DImplementation->update_daily_schdule(airport_iata);
 
@@ -318,6 +381,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         f.latitude = s[6].is_null() ? 0.0 : s[6].get<double>();
                         f.longitude = s[5].is_null() ? 0.0 : s[5].get<double>();
                         f.altitude = s[7].is_null() ? 0.0 : s[7].get<double>();
+                        f.track = s[10].is_null() ? 0.0 : s[10].get<double>();
                         double alt = f.altitude;
                         bool on_ground = s[8].get<bool>();
                         f.v_rate = s[11].is_null() ? 0.0 : s[11].get<double>();
@@ -330,7 +394,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         }
                         const double KSMF_LAT = 38.696;
                         const double KSMF_LON = -121.591;
-                        bool is_locally_relevant = (std::abs(f.latitude - KSMF_LAT) < 1.0 && std::abs(f.longitude - KSMF_LON < 1.0));
+                        bool is_locally_relevant = (std::abs(f.latitude - KSMF_LAT) < 1.0 && std::abs(f.longitude - KSMF_LON) < 1.0);
                         long long current_time = std::time(0);
                         long long last_pos_update = s[3].is_null() ? 0 : s[3].get<long long>();
                         if(on_ground || alt < 50){
@@ -389,6 +453,12 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         }
                         if(DImplementation->schedule_times.count(f.callsign)){
                             f.est_arrival_time = DImplementation->schedule_times[f.callsign];
+                        }
+                        if (f.status_text == "Landed / Taxiing" || f.status_text == "Landed (Signal Lost)") {
+                            // if already landed, set runway to "-" to eliminate misconception
+                            f.predicted_runway = "-"; 
+                        } else {
+                            predict_runway(f, wind_deg, wind_speed_kts);
                         }
                         live_arrivals.push_back(f);
                     }

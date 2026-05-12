@@ -21,6 +21,7 @@ struct Flight{
     std::string regi_num;
     std::string description;
     std::string status_text;
+    double track = 0.0;
     std::string predicted_runway = "N/A";
 };
 
@@ -31,7 +32,7 @@ class MyOpenSky{
     public:
         MyOpenSky();
         ~MyOpenSky();
-        std::vector<Flight> get_arrivals(const std::string& airport_icao, const std::string& airport_iata, double lamin, double lomin, double lamax, double lomax);
+        std::vector<Flight> get_arrivals(const std::string& airport_icao, const std::string& airport_iata, double lamin, double lomin, double lamax, double lomax, double wind_deg, double wind_speed_kts);
 };
 
 #endif

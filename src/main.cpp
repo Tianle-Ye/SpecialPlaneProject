@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <thread>
 #include <chrono>
+#include <cmath>
 
 using std::cout;
 using std::endl;
@@ -39,6 +40,17 @@ int main(){
         if(ksmf_wind.state == true){
             cout<<"current KSMF wind speed: "<<ksmf_wind.speed<<" m/s ("<<std::fixed<<std::setprecision(2)<<knots<<" knots)"<<endl;
             cout<<"current KSMF wind direction: "<<ksmf_wind.deg<<" degrees"<<endl;
+
+            double rwy_true_hdg = 180.8;
+            double angle_rad = (ksmf_wind.deg - rwy_true_hdg) * 3.14159265 / 180.0;
+            double xw_comp = std::abs(knots * std::sin(angle_rad));
+
+            cout << "Crosswind Component: " << std::fixed << std::setprecision(1) << xw_comp << " knots" << endl;
+
+            //if crosswind > 20, print alerts
+            if (xw_comp > 20.0) {
+                cout << "\033[1;31;5m !!! HIGH CROSSWIND WARNING !!! \033[0m" << endl;
+            }
         }
         else{
             cout<<"fail to retrieve KSMF wind info."<<endl;
@@ -46,10 +58,11 @@ int main(){
 
         cout<<"----------------------------------------"<<endl;
 
-        std::vector<Flight> ksmf_arrivals = sky.get_arrivals("KSMF", "SMF", 34.906, -126.775, 42.930, -114.539);
+        std::vector<Flight> ksmf_arrivals = sky.get_arrivals("KSMF", "SMF", 34.906, -126.775, 42.930, -114.539, ksmf_wind.deg, knots);
 
         cout<<std::left<<std::setw(12)<<"CALLSIGN"
             <<std::setw(10)<<"FROM"
+            <<std::setw(8)<<"RWY"     // 新增：跑道列
             <<std::setw(10)<<"ETA"
             <<"STATUS / SPECIAL DESCRIPTION"<<endl;
 
@@ -61,6 +74,9 @@ int main(){
                 cout<<std::left<<std::setw(12)<<f.callsign;
                 std::string from_apt = (f.depart_airport.empty() || f.depart_airport == "PENDING") ? "N/A" : f.depart_airport;
                 cout<<std::setw(10)<<from_apt;
+
+                cout<<std::setw(8)<<f.predicted_runway;
+
                 cout<<std::setw(10)<<convert_time(f.est_arrival_time);
                 cout<<std::setw(25)<<f.status_text;
                 if (f.is_special) {
