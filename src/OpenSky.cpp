@@ -12,49 +12,90 @@
 #include <memory>
 #include <sqlite3.h>
 #include <cmath>
+#include <deque>
 
 using std::cout;
 using std::endl;
 
 using json = nlohmann::json;
 
-void predict_runway(Flight& f, double wind_deg_true, double wind_speed_kts) {
-    const double RWY_TRUE_HDG = 180.8; 
-    const double M_PI_VAL = 3.141592653589793;
-    
-    double angle_rad = (wind_deg_true - RWY_TRUE_HDG) * M_PI_VAL / 180.0;
-    double hw_component = wind_speed_kts * std::cos(angle_rad);
-    std::string flow = (hw_component >= -5.0) ? "17" : "35";
+namespace {
+    // KSMF runway data
+    const double SMF_RWY_TRUE_HDG = 180.8; 
+    const double SMF_EAST_RWY_LON = -121.585; // 17L/35R
+    const double SMF_WEST_RWY_LON = -121.597; // 17R/35L
 
-    std::string carrier = f.callsign.substr(0, 3);
-    char side = 'L';
+    // likelihood calculation：using Gausian Function
+    double calculate_likelihood_east(double current_lon) {
+        // 1000000 is sensitivity coefficient，with deviation of 0.012 could generate distinguishable difference
+        double dist_sq_east = std::pow(current_lon - SMF_EAST_RWY_LON, 2);
+        double dist_sq_west = std::pow(current_lon - SMF_WEST_RWY_LON, 2);
 
-    // terminal preference.
-    bool is_terminal_b = (carrier == "SWA" || carrier == "ASA");
-    bool is_terminal_a = (carrier == "UAL" || carrier == "AAL" || carrier == "DAL");
-
-    if (f.altitude > 1500) {
-        // high altitude, trust airline preferences
-        if (is_terminal_b) side = (flow == "17") ? 'R' : 'L'; // 17R/35L is closer to B
-        else if (is_terminal_a) side = (flow == "17") ? 'L' : 'R'; // 17L/35R is closer to A
-        else {
-            // other airlines, use track to predict
-            side = (f.longitude < -121.591) ? (flow == "17" ? 'R' : 'L') : (flow == "17" ? 'L' : 'R');
-        }
-    } else {
-        // low altitude, trust track
-        if (f.track > 181.5) side = 'R';
-        else if (f.track < 180.0) side = 'L';
-        else {
-            // blur areas
-            side = (f.longitude < -121.591) ? 'R' : 'L';
-        }
+        double l_east = std::exp(-dist_sq_east * 1000000); 
+        double l_west = std::exp(-dist_sq_west * 1000000);
+        
+        // normalization
+        return l_east / (l_east + l_west);
     }
 
-    if (f.altitude > 5000) {
-        f.predicted_runway = flow;
+    double get_prior_p_east(const std::string& callsign, const std::deque<bool>& history) {
+        std::string carrier = callsign.substr(0, 3);
+        double p_base_east = 0.5; // default to neutral
+
+        // airline preferences
+        if (carrier == "UAL" || carrier == "AAL" || carrier == "DAL" || carrier == "SKW") 
+            p_base_east = 0.85; 
+        else if (carrier == "SWA" || carrier == "ASA") 
+            p_base_east = 0.15;
+
+        if (history.empty()) return p_base_east;
+
+        // recent historic trends
+        double east_observed = std::count(history.begin(), history.end(), true);
+        double p_history = east_observed / history.size();
+
+        // 7:3 hybrid model
+        return (0.7 * p_base_east) + (0.3 * p_history);
+    }
+}
+
+void MyOpenSky::predict_runway(Flight& f, double wind_deg_true, double wind_speed_kts, const std::deque<bool>& history) {
+    // 1. determine Flow
+    double angle_rad = (wind_deg_true - SMF_RWY_TRUE_HDG) * 3.14159265 / 180.0;
+    double hw_comp = wind_speed_kts * std::cos(angle_rad);
+    std::string flow = (hw_comp >= -5.0) ? "17" : "35";
+
+    // 2. Bayes reasoning
+    double P_E = get_prior_p_east(f.callsign, history); 
+    double L_E = calculate_likelihood_east(f.longitude); 
+
+    // calculate for posterior probability
+    double posterior_east = (L_E * P_E) / (L_E * P_E + (1.0 - L_E) * (1.0 - P_E));
+
+    // 3. dynamic allocation
+    double final_p_east;
+    if (f.altitude > 4000) {
+        final_p_east = P_E; 
+    } else if (f.altitude < 1000) {
+        // keep 10% Bayes to prevent deviation
+        final_p_east = 0.1 * P_E + 0.9 * L_E; 
     } else {
-        f.predicted_runway = flow + side;
+        // use Bayes in middle altitude
+        final_p_east = posterior_east;
+    }
+
+    // 4. Semantic Mapping
+    bool is_east = (final_p_east > 0.5);
+    char side;
+    if (flow == "17") side = is_east ? 'L' : 'R';
+    else side = is_east ? 'R' : 'L';
+
+    // 5. output
+    if (f.status_text.find("Landed") != std::string::npos) {
+        f.predicted_runway = "-";
+    } else {
+        // higher than 5000ft
+        f.predicted_runway = (f.altitude > 5000) ? flow : (flow + side);
     }
 }
 
@@ -64,6 +105,8 @@ std::string trim(const std::string& s) {
     size_t last = s.find_last_not_of(' ');
     return s.substr(first, (last - first + 1));
 }
+
+std::deque<bool> landing_history; // true for east, false for west
 
 struct MyOpenSky::SImplementation{
     
@@ -80,7 +123,7 @@ struct MyOpenSky::SImplementation{
     std::unordered_map<std::string, long long> schedule_times;
 
     std::string current_active_flow = "17"; // default flow
-    int tailwind_violation_count = 0;
+    int tailwind_violation_count = 0; 
 
     static size_t write_callback(char *ptr, size_t size, size_t nmemb, void *userdata){
         std::string *buffer = static_cast<std::string*>(userdata);
@@ -317,6 +360,18 @@ struct MyOpenSky::SImplementation{
         return status;
     }
 
+    const size_t MAX_HISTORY = 20;
+
+    // status check
+    void update_history_if_landed(const Flight& f) {
+        if (f.status_text == "Landed / Taxiing") {
+            // determine based on longitude
+            bool was_east = (f.longitude > -121.591); 
+            landing_history.push_back(was_east);
+            if (landing_history.size() > MAX_HISTORY) landing_history.pop_front();
+        }
+    }
+
     ~SImplementation(){
         if(db){
             sqlite3_close(db);
@@ -458,7 +513,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                             // if already landed, set runway to "-" to eliminate misconception
                             f.predicted_runway = "-"; 
                         } else {
-                            predict_runway(f, wind_deg, wind_speed_kts);
+                            predict_runway(f, wind_deg, wind_speed_kts, landing_history);
                         }
                         live_arrivals.push_back(f);
                     }
