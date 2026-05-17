@@ -61,9 +61,27 @@ namespace {
 
 void MyOpenSky::predict_runway(Flight& f, double wind_deg_true, double wind_speed_kts, const std::deque<bool>& history) {
     // 1. determine Flow
-    double angle_rad = (wind_deg_true - SMF_RWY_TRUE_HDG) * 3.14159265 / 180.0;
-    double hw_comp = wind_speed_kts * std::cos(angle_rad);
-    std::string flow = (hw_comp >= -5.0) ? "17" : "35";
+    const double SMF_RWY_35_TRUE_HDG = 360.8; // runway 35
+    
+    // get the angle of wind_deg with 17/35 runway
+    double diff_17 = std::abs(wind_deg_true - SMF_RWY_TRUE_HDG);
+    if (diff_17 > 180.0) diff_17 = 360.0 - diff_17;
+    
+    double diff_35 = std::abs(wind_deg_true - SMF_RWY_35_TRUE_HDG);
+    if (diff_35 > 180.0) diff_35 = 360.0 - diff_35;
+    
+    std::string flow = (diff_17 < diff_35) ? "17" : "35";
+    
+    // Tailwind Override
+    // hw_17 > 0 headwind，< 0 tailwind
+    double angle_rad_17 = (wind_deg_true - SMF_RWY_TRUE_HDG) * 3.14159265 / 180.0;
+    double hw_17 = wind_speed_kts * std::cos(angle_rad_17);
+    
+    if (flow == "17" && hw_17 < -5.0) {
+        flow = "35"; 
+    } else if (flow == "35" && hw_17 > 5.0) { // hw_17 > 5.0 means 35 tailwind < -5.0
+        flow = "17"; 
+    }
 
     // 2. Bayes reasoning
     double P_E = get_prior_p_east(f.callsign, history); 
@@ -321,19 +339,6 @@ struct MyOpenSky::SImplementation{
 
         sqlite3_exec(db, zSQL, 0, 0, nullptr);
         sqlite3_free(zSQL);
-    }
-
-    std::string get_stabilized_runway(double hw_comp) {
-        if (current_active_flow == "17" && hw_comp < -5.0) {
-            tailwind_violation_count++;
-            if (tailwind_violation_count > 5) {
-                current_active_flow = "35";
-                tailwind_violation_count = 0;
-            }
-        } else if (current_active_flow == "35" && hw_comp > 5.0) {
-            current_active_flow = "17";
-        }
-        return current_active_flow;
     }
 
     struct CrosswindStatus {
