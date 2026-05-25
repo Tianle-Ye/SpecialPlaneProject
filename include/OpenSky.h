@@ -35,6 +35,8 @@ class MyOpenSky{
         ~MyOpenSky();
         void predict_runway(Flight& f, double wind_deg_true, double wind_speed_kts, const std::deque<bool>& history);
         std::vector<Flight> get_arrivals(const std::string& airport_icao, const std::string& airport_iata, double lamin, double lomin, double lamax, double lomax, double wind_deg, double wind_speed_kts);
+        std::vector<Flight> get_departures(double wind_deg, double wind_speed_kts);
+        void print_ground_fleet_summary() const;
 };
 
 #endif

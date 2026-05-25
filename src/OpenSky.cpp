@@ -139,6 +139,17 @@ struct MyOpenSky::SImplementation{
     std::unordered_map<std::string, std::string> special_planes;
     std::unordered_map<std::string, Flight> detail_cache;
     std::unordered_map<std::string, long long> schedule_times;
+    std::unordered_map<std::string, std::string> schedule_origins;
+
+    struct GroundedAircraft{
+        std::string hex;
+        std::string arrival_callsign;
+        bool is_special;
+        std::string description;
+        long long landed_ts;
+        bool is_woken_up;
+    };
+    std::unordered_map<std::string, GroundedAircraft> ground_fleet;
 
     std::string current_active_flow = "17"; // default flow
     int tailwind_violation_count = 0; 
@@ -211,9 +222,13 @@ struct MyOpenSky::SImplementation{
                     for(auto &item : data["response"]){
                         std::string callsign = trim(item.value("flight_icao", ""));
                         long long est_ts = item.value("arr_estimated_ts", 0LL);
+                        std::string dep_icao = item.value("dep_icao", "");
                         if(!callsign.empty()){
                             today_arr_callsigns.insert(callsign);
                             schedule_times[callsign] = est_ts;
+                            if(!dep_icao.empty()){
+                                schedule_origins[callsign] = dep_icao;
+                            }
                         }
                     }
                     last_airlabs_update = now;
@@ -434,39 +449,98 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                     std::string hex = s[0].get<std::string>();
                     std::string callsign = s[1].is_null() ? "" : s[1].get<std::string>();
                     callsign = trim(callsign);
-                    if(DImplementation->today_arr_callsigns.count(callsign)){
+
+                    double lat = s[6].is_null() ? 0.0 : s[6].get<double>();
+                    double lon = s[5].is_null() ? 0.0 : s[5].get<double>();
+                    double alt = s[7].is_null() ? 0.0 : s[7].get<double>();
+                    bool on_ground = s[8].get<bool>();
+
+                    const double KSMF_LAT = 38.696;
+                    const double KSMF_LON = -121.591;
+                    bool is_on_smf_surface = (on_ground || alt < 100) && (std::abs(lat - KSMF_LAT) < 0.03 && std::abs(lon - KSMF_LON) < 0.03);
+
+                    bool is_inbound_flight = DImplementation->today_arr_callsigns.count(callsign);
+                    bool is_tracked_on_ground = DImplementation->ground_fleet.count(hex);
+                    
+                    if(is_inbound_flight || is_tracked_on_ground || is_on_smf_surface){
                         Flight f;
                         f.callsign = callsign;
                         f.hex_num = hex;
-                        f.latitude = s[6].is_null() ? 0.0 : s[6].get<double>();
-                        f.longitude = s[5].is_null() ? 0.0 : s[5].get<double>();
-                        f.altitude = s[7].is_null() ? 0.0 : s[7].get<double>();
+                        f.latitude = lat;
+                        f.longitude = lon;
+                        f.altitude = alt;
                         f.track = s[10].is_null() ? 0.0 : s[10].get<double>();
-                        double alt = f.altitude;
-                        bool on_ground = s[8].get<bool>();
                         f.v_rate = s[11].is_null() ? 0.0 : s[11].get<double>();
-                        if(f.v_rate > 1.0 && alt > 500){
-                            f.status_text = "^ Climbing / Departing";
-                            f.isdescending = false;
-                            std::string hex_upper = hex;
-                            std::transform(hex_upper.begin(), hex_upper.end(), hex_upper.begin(), ::toupper);
-                            DImplementation->detail_cache.erase(hex_upper);
-                        }
+
                         const double KSMF_LAT = 38.696;
                         const double KSMF_LON = -121.591;
+
+                        double dLat = KSMF_LAT - f.latitude;
+                        double dLon = (KSMF_LON - f.longitude) * std::cos(KSMF_LAT * 3.14159 / 180.0);
+                        double bearing_to_smf = std::atan2(dLon, dLat) * 180.0 / 3.14159;
+                        if(bearing_to_smf < 0) bearing_to_smf += 360.0;
+                        
+                        double track_diff = std::abs(f.track - bearing_to_smf);
+                        if(track_diff > 180.0) track_diff = 360.0 - track_diff;
+                        
+                        double dist_sq = (f.latitude - KSMF_LAT)*(f.latitude - KSMF_LAT) + (f.longitude - KSMF_LON)*(f.longitude - KSMF_LON);
+
+                        if(dist_sq > 0.25 && alt > 5000 && f.v_rate >= -0.1 && track_diff > 90.0){
+                            continue;
+                        }
+
                         bool is_locally_relevant = (std::abs(f.latitude - KSMF_LAT) < 1.0 && std::abs(f.longitude - KSMF_LON) < 1.0);
                         long long current_time = std::time(0);
                         long long last_pos_update = s[3].is_null() ? 0 : s[3].get<long long>();
-                        if(on_ground || alt < 50){
-                            if(is_locally_relevant){
-                                f.isdescending = false;
-                                f.status_text = "Landed / Taxiing";
+
+                        if(on_ground || (alt < 50 && is_locally_relevant)){
+                            f.status_text = "Landed / Taxiing";
+                            f.predicted_runway = "-";
+                            f.isdescending = false;
+                            
+                            if(!DImplementation->ground_fleet.count(hex)){
+                                bool is_sp = DImplementation->special_planes.count(hex);
+                                std::string desc = is_sp ? DImplementation->special_planes[hex] : "";
+                                DImplementation->ground_fleet[hex] = {
+                                    hex, callsign, is_sp, desc, std::time(0), false
+                                };
                             }
-                            else{
+                            if(DImplementation->ground_fleet.count(hex) && !DImplementation->ground_fleet[hex].is_woken_up &&
+                               (callsign == DImplementation->ground_fleet[hex].arrival_callsign || callsign.empty())){
                                 continue;
                             }
                         }
-                        else if(alt < 1000){
+                        if(DImplementation->ground_fleet.count(hex)){
+                            auto& parked_plane = DImplementation->ground_fleet[hex];
+                            
+                            bool is_callsign_changed = (!callsign.empty() && callsign != parked_plane.arrival_callsign);
+                            bool is_taxiing_out = (on_ground && (is_callsign_changed || std::abs(f.track) > 0.1)); 
+
+                            if(f.v_rate > 2.0 && alt > 1500){
+                                DImplementation->ground_fleet.erase(hex); 
+                                std::string hex_upper = hex;
+                                std::transform(hex_upper.begin(), hex_upper.end(), hex_upper.begin(), ::toupper);
+                                DImplementation->detail_cache.erase(hex_upper); 
+                                continue; 
+                            }
+
+                            if(is_callsign_changed || is_taxiing_out){
+                                parked_plane.is_woken_up = true;
+                                if(parked_plane.is_special) {
+                                    if(!is_callsign_changed){
+                                        parked_plane.arrival_callsign = "WOKEN_UP_SPECIAL_SAME_CS";
+                                    }
+                                    else{
+                                        parked_plane.arrival_callsign = "WOKEN_UP_SPECIAL_NEW_CS";
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                        if(f.v_rate > 2.0 && track_diff > 90.0){
+                            continue; 
+                        }
+                        if(alt < 1000){
                             if((current_time - last_pos_update) > 25 && last_pos_update != 0){
                                 f.status_text = "Landed (Signal Lost)";
                                 f.isdescending = false;
@@ -490,7 +564,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         if(DImplementation->special_planes.count(hex)){
                             f.is_special = true;
                             f.description = DImplementation->special_planes[hex];
-                            if((f.isdescending) || (f.status_text == "> Approaching") || (f.status_text == "Landed / Taxiing")){
+                            // if((f.isdescending) || (f.status_text == "> Approaching") || (f.status_text == "Landed / Taxiing")){
                                 DImplementation->get_detail(f);
                                 if(f.arrival_airport == "KSMF" || f.arrival_airport == "SMF"){
                                     DImplementation->log_flight(f);
@@ -502,17 +576,18 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                                     f.is_special = false;
                                     f.status_text = "- Overflight (To " + f.arrival_airport + ")";
                                 }
-                            }
-                            else{
-                                f.depart_airport = "PENDING";
-                                f.est_arrival_time = 0;
-                            }
+                            // }
                         }
                         else{
                             f.is_special = false;
                         }
                         if(DImplementation->schedule_times.count(f.callsign)){
                             f.est_arrival_time = DImplementation->schedule_times[f.callsign];
+                        }
+                        if(DImplementation->schedule_origins.count(f.callsign)){
+                            if(f.depart_airport.empty() || f.depart_airport == "PENDING" || f.depart_airport == "N/A"){
+                                f.depart_airport = DImplementation->schedule_origins[f.callsign];
+                            }
                         }
                         if (f.status_text == "Landed / Taxiing" || f.status_text == "Landed (Signal Lost)") {
                             // if already landed, set runway to "-" to eliminate misconception
@@ -532,4 +607,59 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
         curl_easy_cleanup(curl);
     }
     return live_arrivals;
+}
+
+std::vector<Flight> MyOpenSky::get_departures(double wind_deg, double wind_speed_kts){
+    std::vector<Flight> live_departures;
+
+    for(const auto& pair : DImplementation->ground_fleet){
+        const auto& plane = pair.second;
+        
+        if(plane.is_special && (plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS" || plane.arrival_callsign == "WOKEN_UP_SPECIAL_NEW_CS")){
+            Flight f;
+            f.callsign = plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS" ? "PENDING" : plane.arrival_callsign; 
+            f.status_text = (plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS") ? "🚨 TAXI OUT (Same CS)" : "🚨 TAXI OUT";
+            f.is_special = true;
+            f.description = plane.description;
+            
+            predict_runway(f, wind_deg, wind_speed_kts, landing_history);
+            live_departures.push_back(f);
+        }
+    }
+    return live_departures;
+}
+
+void MyOpenSky::print_ground_fleet_summary() const{
+    int total_parked_count = 0;
+    int woken_up_departure_count = 0;
+
+    for(const auto& pair : DImplementation->ground_fleet){
+        const auto& plane = pair.second;
+        
+        if(plane.is_special){
+            int parked_mins = (std::time(0) - plane.landed_ts) / 60;
+            
+            if(plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS"){
+                std::cout<<"\033[1;31m🚨 [SPECIAL OUT] " << plane.description<<" [CS_Unchanged] Taxiing!\033[0m"<<std::endl;
+            }
+            else if (plane.arrival_callsign == "WOKEN_UP_SPECIAL_NEW_CS") {
+                std::cout<<"\033[1;31m🚨 [SPECIAL OUT] "<<plane.description<<" Taxiing!\033[0m"<<std::endl;
+            }
+            else {
+                std::cout<<"\033[1;33m🌟 [SPECIAL PARKED] "<<plane.description<<" (Landed "<<parked_mins<<" min ago)\033[0m"<<std::endl;
+            }
+        } else{
+            if(plane.is_woken_up){
+                woken_up_departure_count++; 
+            }
+            else{
+                total_parked_count++; 
+            }
+        }
+    }
+
+    if(woken_up_departure_count > 0){
+        std::cout<<"\033[1;32m[Dep_updates] Currently "<<woken_up_departure_count<<" plane(s) ready for departure. \033[0m"<<std::endl;
+    }
+    std::cout<<"[Static Monitoring] Has "<<total_parked_count<<" normal planes."<<std::endl;
 }
