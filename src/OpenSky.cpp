@@ -603,6 +603,33 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
         else if(res == CURLE_OPERATION_TIMEDOUT){
             cout<<"The request timed out."<<endl;
         }
+        std::vector<Flight> buffered_specials;
+        for (const auto& pair : DImplementation->ground_fleet) {
+            const auto& plane = pair.second;
+            
+            // Special plane, push onto the screen
+            if (plane.is_special && !plane.is_woken_up) {
+                Flight f;
+                f.hex_num = plane.hex;
+                f.callsign = plane.arrival_callsign;
+                f.is_special = true;
+                f.description = plane.description;
+                f.predicted_runway = "-";
+                
+                int parked_mins = (std::time(0) - plane.landed_ts) / 60;
+                f.status_text = "Landed (At Gate " + std::to_string(parked_mins) + "m ago)";
+                
+                if (DImplementation->schedule_origins.count(f.callsign)) {
+                    f.depart_airport = DImplementation->schedule_origins[f.callsign];
+                } else {
+                    f.depart_airport = "N/A";
+                }
+                
+                buffered_specials.push_back(f);
+            }
+        }
+        
+        live_arrivals.insert(live_arrivals.begin(), buffered_specials.begin(), buffered_specials.end());
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
     }
