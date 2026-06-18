@@ -57,6 +57,25 @@ namespace {
         // 7:3 hybrid model
         return (0.7 * p_base_east) + (0.3 * p_history);
     }
+
+    //Haversine Formula
+    double calculate_distance_to_smf(double plane_lat, double plane_lon) {
+        const double KSMF_LAT = 38.696;
+        const double KSMF_LON = -121.591;
+        const double EARTH_RADIUS_NM = 3440.065;
+
+        double lat1_rad = plane_lat * M_PI / 180.0;
+        double lat2_rad = KSMF_LAT * M_PI / 180.0;
+        double dLat = (KSMF_LAT - plane_lat) * M_PI / 180.0;
+        double dLon = (KSMF_LON - plane_lon) * M_PI / 180.0;
+
+        double a = std::sin(dLat / 2.0) * std::sin(dLat / 2.0) +
+                   std::cos(lat1_rad) * std::cos(lat2_rad) *
+                   std::sin(dLon / 2.0) * std::sin(dLon / 2.0);
+        double c = 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
+
+        return EARTH_RADIUS_NM * c; 
+    }
 }
 
 void MyOpenSky::predict_runway(Flight& f, double wind_deg_true, double wind_speed_kts, const std::deque<bool>& history) {
@@ -540,6 +559,54 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         if(f.v_rate > 2.0 && track_diff > 90.0){
                             continue; 
                         }
+                        double dist_nm = calculate_distance_to_smf(f.latitude, f.longitude);
+                        double current_gs_kts = (s[9].is_null() ? 0.0 : s[9].get<double>()) * 1.94384;
+
+                        double est_avg_speed = current_gs_kts;
+                        
+                        if (alt > 10000) {
+                            est_avg_speed = current_gs_kts * 0.85;
+                        } 
+                        else if (alt > 5000) {
+                            est_avg_speed = current_gs_kts * 0.75;
+                        } 
+                        else {
+                            est_avg_speed = 160.0;
+                        }
+
+                        if (est_avg_speed < 50.0) est_avg_speed = 140.0; 
+
+                        double ttg_hours = dist_nm / est_avg_speed;
+                        long long ttg_seconds = static_cast<long long>(ttg_hours * 3600.0);
+                        
+                        if (!is_locally_relevant) {
+                            ttg_seconds += 120; 
+                        }
+
+                        long long calculated_eta_ts = current_time + ttg_seconds;
+                        
+                        if (calculated_eta_ts <= current_time) {
+                            calculated_eta_ts = current_time + 60;
+                        }
+
+                        if (DImplementation->schedule_times.count(f.callsign) && DImplementation->schedule_times[f.callsign] > 0) {
+                            long long sch_ts = DImplementation->schedule_times[f.callsign];
+                            
+                            if (std::abs(sch_ts - calculated_eta_ts) > 15 * 60) {
+                                f.est_arrival_time = calculated_eta_ts;
+                            } else {
+                                f.est_arrival_time = sch_ts;
+                            }
+                        } 
+                        else {
+                            f.est_arrival_time = calculated_eta_ts;
+                        }
+
+                        int live_ttg_min = static_cast<int>((f.est_arrival_time - current_time) / 60);
+                        if (live_ttg_min < 0) live_ttg_min = 0;
+
+                        std::string ttg_str = " (In " + std::to_string(live_ttg_min) + "m)";
+
                         if(alt < 1000){
                             if((current_time - last_pos_update) > 25 && last_pos_update != 0){
                                 f.status_text = "Landed (Signal Lost)";
@@ -547,7 +614,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                             }
                             else if(is_locally_relevant){
                                 f.isdescending = false;
-                                f.status_text = "> Approaching";
+                                f.status_text = "> Approaching" + ttg_str; // ex：> Approaching (In 3m)
                             }
                             else{
                                 continue;
@@ -555,11 +622,11 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                         }
                         else if(f.v_rate < -0.5){
                             f.isdescending = true;
-                            f.status_text = is_locally_relevant ? "v Descending (to SMF)" : "v Descending";
+                            f.status_text = is_locally_relevant ? ("v Descending (to SMF)" + ttg_str) : ("v Descending" + ttg_str);
                         }
                         else{
                             f.isdescending = false;
-                            f.status_text = "- En Route";
+                            f.status_text = "- En Route" + ttg_str; // ex：- En Route (In 22m)
                         }
                         if(DImplementation->special_planes.count(hex)){
                             f.is_special = true;
