@@ -589,7 +589,7 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
                             calculated_eta_ts = current_time + 60;
                         }
 
-                        if (DImplementation->schedule_times.count(f.callsign) && DImplementation->schedule_times[f.callsign] > 0) {
+                        if (alt > 5000 && DImplementation->schedule_times.count(f.callsign) && DImplementation->schedule_times[f.callsign] > 0) {
                             long long sch_ts = DImplementation->schedule_times[f.callsign];
                             
                             if (std::abs(sch_ts - calculated_eta_ts) > 15 * 60) {
@@ -697,6 +697,109 @@ std::vector<Flight> MyOpenSky::get_arrivals(const std::string& airport_icao, con
         }
         
         live_arrivals.insert(live_arrivals.begin(), buffered_specials.begin(), buffered_specials.end());
+
+        try {
+            json state_json;
+
+            // 1. Serialize Wind and Crosswind Context
+            double rwy_true_hdg = 180.8;
+            double angle_rad = (wind_deg - rwy_true_hdg) * 3.14159265 / 180.0;
+            double xw_comp = std::abs(wind_speed_kts * std::sin(angle_rad));
+            
+            state_json["wind"]["speed_kts"] = wind_speed_kts;
+            state_json["wind"]["speed_ms"] = wind_speed_kts / 1.94384;
+            state_json["wind"]["deg"] = wind_deg;
+            state_json["wind"]["crosswind"] = xw_comp;
+            state_json["wind"]["warning"] = (xw_comp > 20.0);
+
+            // 2. Serialize Live Arrivals
+            json arr_arr = json::array();
+            for (const auto& f : live_arrivals) {
+                json obj;
+                obj["callsign"] = f.callsign;
+                obj["from"] = f.depart_airport.empty() ? "N/A" : f.depart_airport;
+                obj["rwy"] = f.predicted_runway;
+                
+                if (f.est_arrival_time <= 0) {
+                    obj["eta"] = "---";
+                } else {
+                    time_t t = static_cast<time_t>(f.est_arrival_time);
+                    struct tm *lt = std::localtime(&t);
+                    char buf[10];
+                    std::strftime(buf, sizeof(buf), "%H:%M", lt);
+                    obj["eta"] = std::string(buf);
+                }
+                
+                obj["status"] = f.status_text;
+                obj["is_special"] = f.is_special;
+                obj["desc"] = f.description;
+                arr_arr.push_back(obj);
+            }
+            state_json["arrivals"] = arr_arr;
+
+            // 3. Serialize Tactical Departures (Matching get_departures logic)
+            json dep_arr = json::array();
+            for(const auto& pair : DImplementation->ground_fleet){
+                const auto& plane = pair.second;
+                if(plane.is_special && (plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS" || plane.arrival_callsign == "WOKEN_UP_SPECIAL_NEW_CS")){
+                    Flight f;
+                    f.callsign = plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS" ? "PENDING" : plane.arrival_callsign; 
+                    f.status_text = (plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS") ? "TAXI OUT (Same CS)" : "TAXI OUT";
+                    f.is_special = true;
+                    f.description = plane.description;
+                    predict_runway(f, wind_deg, wind_speed_kts, landing_history);
+
+                    json obj;
+                    obj["callsign"] = f.callsign;
+                    obj["to"] = (f.arrival_airport.empty() || f.arrival_airport == "PENDING") ? "N/A" : f.arrival_airport;
+                    obj["rwy"] = f.predicted_runway;
+                    obj["status"] = f.status_text;
+                    obj["desc"] = f.description;
+                    dep_arr.push_back(obj);
+                }
+            }
+            state_json["departures"] = dep_arr;
+
+            // 4. Serialize Ground Fleet Summary Metrics
+            int total_parked_count = 0;
+            int woken_up_departure_count = 0;
+            json special_messages = json::array();
+
+            for(const auto& pair : DImplementation->ground_fleet){
+                const auto& plane = pair.second;
+                if(plane.is_special){
+                    int parked_mins = (std::time(0) - plane.landed_ts) / 60;
+                    if(plane.arrival_callsign == "WOKEN_UP_SPECIAL_SAME_CS"){
+                        special_messages.push_back("[SPECIAL OUT] " + plane.description + " [CS_Unchanged] Taxiing!");
+                    }
+                    else if (plane.arrival_callsign == "WOKEN_UP_SPECIAL_NEW_CS") {
+                        special_messages.push_back("[SPECIAL OUT] " + plane.description + " Taxiing!");
+                    }
+                    else {
+                        special_messages.push_back("[SPECIAL PARKED] " + plane.description + " (Landed " + std::to_string(parked_mins) + " min ago)");
+                    }
+                } else {
+                    if(plane.is_woken_up){ woken_up_departure_count++; }
+                    else { total_parked_count++; }
+                }
+            }
+            state_json["fleet"]["total_parked"] = total_parked_count;
+            state_json["fleet"]["woken_departures"] = woken_up_departure_count;
+            state_json["fleet"]["specials"] = special_messages;
+
+            // 5. Write Atomic JavaScript Stream to Disk
+            const char* target_path = "data/radar_data.js";
+            std::remove(target_path);
+            std::ofstream out_file(target_path, std::ios::out);
+            if (out_file.is_open()) {
+                out_file << "window.radarState = " << state_json.dump() << ";";
+                out_file.flush();
+                out_file.close();
+            }
+        } catch (const std::exception& e) {
+            std::cout << "[EXPORTER ERROR] " << e.what() << std::endl;
+        }
+
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
     }

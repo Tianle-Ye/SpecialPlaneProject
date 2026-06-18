@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KSMF Flight Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0c0c0e;
+            color: #f4f4f5;
+        }
+        .mono-metrics {
+            font-family: 'JetBrains Mono', monospace;
+            font-feature-settings: "tnum";
+        }
+        .flight-strip {
+            background-color: #141417;
+            border: 1px solid #202024;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .flight-strip:hover {
+            border-color: #3f3f46;
+            background-color: #18181b;
+            transform: translateX(2px);
+        }
+        .strip-special {
+            background: linear-gradient(90deg, rgba(217, 119, 6, 0.08) 0%, #141417 100%);
+            border-left: 4px solid #d97706;
+            border-top-color: #2e1d0c;
+            border-right-color: #2e1d0c;
+            border-bottom-color: #2e1d0c;
+        }
+        .strip-special:hover {
+            background: linear-gradient(90deg, rgba(217, 119, 6, 0.15) 0%, #18181b 100%);
+        }
+        .badge-amber {
+            background-color: #d97706;
+            color: #000000;
+            font-weight: 900;
+            font-size: 0.65rem;
+            letter-spacing: 0.05em;
+        }
+    </style>
+</head>
+<body class="p-8 min-h-screen flex flex-col justify-between selection:bg-zinc-800">
+
+    <div>
+        <header class="flex justify-between items-center border-b border-zinc-800 pb-5 mb-8">
+            <div>
+                <h1 class="text-xl font-black text-white tracking-wider uppercase">KSMF FLIGHT STATUS</h1>
+                <p class="text-[10px] text-zinc-500 font-bold tracking-widest uppercase mt-0.5">Live Arrival & Departure Monitor</p>
+            </div>
+            <div class="flex items-center gap-6 text-right mono-metrics">
+                <div>
+                    <div class="text-xs text-zinc-500 font-bold uppercase tracking-wider">Local Time</div>
+                    <div class="text-sm font-bold text-zinc-100 mt-0.5" id="current-time">--:--:--</div>
+                </div>
+                <div class="border-l border-zinc-800 pl-6">
+                    <div class="text-xs text-zinc-500 font-bold uppercase tracking-wider">Refresh</div>
+                    <div class="text-sm font-bold text-zinc-400 mt-0.5" id="refresh-counter">60s</div>
+                </div>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+            
+            <div class="lg:col-span-2 space-y-4">
+                <div class="flex justify-between items-center px-1">
+                    <h2 class="text-xs font-black text-zinc-400 uppercase tracking-widest flex items-center">
+                        <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full mr-2.5 animate-pulse"></span>
+                        Inbound Flights
+                    </h2>
+                    <span class="text-[10px] text-zinc-600 font-bold uppercase mono-metrics" id="arr-count">Active: 0</span>
+                </div>
+                
+                <div class="grid grid-cols-12 px-4 py-2 text-[10px] font-bold text-zinc-500 uppercase tracking-wider mono-metrics">
+                    <div class="col-span-2">Callsign</div>
+                    <div class="col-span-2 text-center">From</div>
+                    <div class="col-span-1 text-center">Runway</div>
+                    <div class="col-span-2 text-center">ETA</div>
+                    <div class="col-span-5 text-right">Status</div>
+                </div>
+
+                <div id="arrival-container" class="space-y-2">
+                    <div class="text-center py-12 text-zinc-600 text-xs font-medium border border-dashed border-zinc-800 rounded">Connecting to local stream...</div>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                
+                <div class="space-y-3">
+                    <h2 class="text-xs font-black text-zinc-400 uppercase tracking-widest flex items-center px-1">
+                        <span class="w-1.5 h-1.5 bg-orange-500 rounded-full mr-2.5"></span>
+                        Active Departures
+                    </h2>
+                    <div id="departure-container" class="space-y-2">
+                        </div>
+                </div>
+
+                <div class="border border-zinc-800 bg-[#0f0f12] rounded p-4 space-y-4">
+                    <div>
+                        <h3 class="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-3">Ground Status</h3>
+                        <div id="fleet-specials" class="space-y-2">
+                            </div>
+                    </div>
+                    <div class="border-t border-zinc-800/60 pt-3 flex justify-between items-center text-[11px] font-bold tracking-wide text-zinc-500 mono-metrics" id="fleet-counters">
+                        <div>Parked Aircraft: --</div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <footer class="mt-16 pt-4 border-t border-zinc-900 flex justify-between items-center text-[10px] font-bold text-zinc-600 tracking-wider uppercase mono-metrics">
+        <div>Live Data Stream Active</div>
+        <div>KSMF Flight Monitor</div>
+    </footer>
+
+    <script>
+        function renderDashboard() {
+            if (!window.radarState) return;
+            const state = window.radarState;
+
+            // 1. Render Arrivals
+            const arrContainer = document.getElementById("arrival-container");
+            document.getElementById("arr-count").innerText = `Active: ${state.arrivals.length}`;
+            arrContainer.innerHTML = "";
+
+            if (state.arrivals.length === 0) {
+                arrContainer.innerHTML = `<div class="text-center py-10 text-zinc-600 text-xs font-medium border border-zinc-800 border-dashed rounded">No active inbound flights.</div>`;
+            } else {
+                state.arrivals.forEach(f => {
+                    const div = document.createElement("div");
+                    
+                    let stripClass = "flight-strip p-4 rounded grid grid-cols-12 items-center text-sm font-medium transition-all duration-150";
+                    let callsignStyle = "text-white font-bold tracking-wide";
+                    
+                    // Advanced Tokenizer for C++ Raw Status Text
+                    let mainStatus = f.status;
+                    let countdownText = "";
+                    
+                    // Regex matches "(In Xm)" or "(At Gate Xm ago)" at the end of string
+                    const timeMatch = f.status.match(/\((In \d+m|At Gate \d+m ago)\)$/);
+                    if (timeMatch) {
+                        countdownText = timeMatch[1];
+                        mainStatus = f.status.replace(timeMatch[0], "").trim();
+                    }
+
+                    // Build Structural Component Layout for Status Column
+                    let statusHtml = "";
+                    if (f.status.includes("Approaching")) {
+                        statusHtml = `
+                            <div class="flex items-center gap-2 justify-end select-none">
+                                <span class="text-xs font-bold text-emerald-400 tracking-wider uppercase">Approaching</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800/40 mono-metrics">${countdownText}</span>
+                            </div>
+                        `;
+                    } else if (f.status.includes("Landed")) {
+                        statusHtml = `
+                            <div class="flex items-center gap-2 justify-end text-xs font-semibold select-none">
+                                <span class="text-zinc-500 uppercase tracking-wider text-[11px]">Landed</span>
+                                <span class="px-1.5 py-0.5 rounded text-[10px] bg-zinc-900 text-zinc-500 border border-zinc-800 mono-metrics">${countdownText || 'On Ground'}</span>
+                            </div>
+                        `;
+                        callsignStyle = "text-zinc-600 font-bold";
+                    } else {
+                        // Standard En Route or Descending Tracks
+                        let isDescending = f.status.includes("Descending");
+                        let statusColor = isDescending ? "text-zinc-300 font-medium" : "text-zinc-400 font-normal";
+                        
+                        statusHtml = `
+                            <div class="flex items-center gap-3 justify-end text-xs">
+                                <span class="${statusColor} tracking-wide whitespace-nowrap">${mainStatus}</span>
+                                ${countdownText ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-zinc-900/80 text-zinc-400 border border-zinc-800/80 mono-metrics">${countdownText}</span>` : ''}
+                            </div>
+                        `;
+                    }
+
+                    // Inject Special Paint Specification Badge if Active
+                    if (f.is_special) {
+                        stripClass += " strip-special";
+                        callsignStyle = "text-amber-500 font-black tracking-wide";
+                        statusHtml += `<div class="mt-2 text-right"><span class="badge-amber px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider">${f.desc}</span></div>`;
+                    }
+
+                    div.className = stripClass;
+                    div.innerHTML = `
+                        <div class="col-span-2 ${callsignStyle} flex flex-col justify-center whitespace-nowrap">${f.callsign || 'N/A'}</div>
+                        <div class="col-span-2 text-center text-zinc-400 font-bold uppercase tracking-wider mono-metrics">${f.from}</div>
+                        <div class="col-span-1 text-center text-blue-400 font-extrabold tracking-widest mono-metrics">${f.rwy}</div>
+                        <div class="col-span-2 text-center text-zinc-300 font-semibold tracking-wide mono-metrics">${f.eta}</div>
+                        <div class="col-span-5 text-right flex flex-col items-end justify-center">${statusHtml}</div>
+                    `;
+                    arrContainer.appendChild(div);
+                });
+            }
+
+            // 2. Render Departures
+            const depContainer = document.getElementById("departure-container");
+            depContainer.innerHTML = "";
+
+            if (state.departures.length === 0) {
+                depContainer.innerHTML = `<div class="text-center py-6 text-zinc-700 text-xs font-semibold border border-zinc-900 border-dashed rounded bg-[#0c0c0e]/40">No special departures active.</div>`;
+            } else {
+                state.departures.forEach(f => {
+                    const div = document.createElement("div");
+                    div.className = "p-3 bg-zinc-900/30 border border-zinc-900 border-l-4 border-orange-600 rounded flex flex-col space-y-2";
+                    div.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <span class="text-orange-400 font-black tracking-wider text-sm">${f.callsign}</span>
+                            <span class="text-blue-400 font-bold text-xs tracking-widest mono-metrics">RWY ${f.rwy}</span>
+                        </div>
+                        <div class="flex justify-between items-end">
+                            <span class="text-xs text-zinc-300">${f.status}</span>
+                            <span class="badge-amber bg-white text-black px-1.5 py-0.5 text-[9px] font-black uppercase rounded tracking-wider">${f.desc}</span>
+                        </div>
+                    `;
+                    depContainer.appendChild(div);
+                });
+            }
+
+            // 3. Render Ground Infrastructure
+            const fleet = state.fleet;
+            const specialsDiv = document.getElementById("fleet-specials");
+            specialsDiv.innerHTML = "";
+
+            if (fleet.specials.length === 0) {
+                specialsDiv.innerHTML = `<div class="text-zinc-600 text-xs py-1">No special aircraft on ground.</div>`;
+            } else {
+                fleet.specials.forEach(msg => {
+                    const line = document.createElement("div");
+                    line.className = "text-xs font-medium border-b border-zinc-900 pb-1.5 last:border-0";
+                    if (msg.includes("OUT")) {
+                        line.innerHTML = `<span class="text-orange-500 font-bold mr-1.5">●</span> <span class="text-zinc-300">${msg}</span>`;
+                    } else {
+                        line.innerHTML = `<span class="text-amber-500 font-bold mr-1.5">●</span> <span class="text-zinc-400">${msg}</span>`;
+                    }
+                    specialsDiv.appendChild(line);
+                });
+            }
+
+            // Render Metrics Counters
+            let counterHtml = "";
+            if (fleet.woken_departures > 0) {
+                counterHtml += `<div class="text-emerald-400 tracking-wide">Departing Aircraft: ${fleet.woken_departures}</div>`;
+            }
+            counterHtml += `<div>Parked Aircraft: ${fleet.total_parked}</div>`;
+            document.getElementById("fleet-counters").innerHTML = counterHtml;
+        }
+
+        function loadScriptStream() {
+            const oldScript = document.getElementById("radar-state-adapter");
+            if (oldScript) oldScript.remove();
+
+            const script = document.createElement("script");
+            script.id = "radar-state-adapter";
+            script.src = `data/radar_data.js?t=${Date.now()}`;
+            script.onload = function() {
+                renderDashboard();
+            };
+            document.head.appendChild(script);
+        }
+
+        let loopCountdown = 60;
+        setInterval(() => {
+            const now = new Date();
+            document.getElementById("current-time").innerText = now.toTimeString().split(' ')[0];
+            
+            loopCountdown--;
+            if (loopCountdown <= 0) {
+                loadScriptStream();
+                loopCountdown = 60;
+            }
+            document.getElementById("refresh-counter").innerText = `REFRESH IN ${loopCountdown.toString().padStart(2, '0')}s`;
+        }, 1000);
+
+        loadScriptStream();
+    </script>
+</body>
+</html>
